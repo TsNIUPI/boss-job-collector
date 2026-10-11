@@ -4,7 +4,14 @@ const exclusive=fn=>{const next=serial.then(fn);serial=next.catch(()=>{});return
 const load=async()=> (await chrome.storage.local.get('task')).task;
 async function save(s){s.updatedAt=Date.now();await chrome.storage.local.set({task:s});const v=stats(s);await chrome.action.setBadgeText({text:s.status==='running'?String(v.saved):s.status==='complete'?'✓':s.status==='paused'?'停':'!'});await chrome.action.setBadgeBackgroundColor({color:s.status==='running'?'#187c72':'#a66416'});}
 function log(s,text){s.logs.push({at:Date.now(),text});s.logs=s.logs.slice(-150);}
-async function schedule(s){if(s.status==='running')await chrome.alarms.create(ALARM,{delayInMinutes:s.config.interval/60});}
+async function schedule(s){if(s.status==='running')await chrome.alarms.create(ALARM,{delayInMinutes:Math.max(60,s.config.interval)/60});}
+async function pacing(){
+ let p=(await chrome.storage.local.get('pacingSession')).pacingSession;const now=Date.now();
+ if(!p||p.restUntil&&now>=p.restUntil){p={startedAt:now,companies:0,restUntil:0};await chrome.storage.local.set({pacingSession:p});}
+ if(p.restUntil&&now<p.restUntil)throw Error('采集休息中，'+new Date(p.restUntil).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})+'后可手动继续，断点已保留');
+ if(p.companies>=20||now-p.startedAt>=30*60*1000){p.restUntil=now+60*60*1000;await chrome.storage.local.set({pacingSession:p});throw Error('已达到本轮采集上限，休息至 '+new Date(p.restUntil).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})+'，之后手动继续');}
+ return p;
+}
 async function pageMessage(id,message,timeout=18000){
  let timer;try{return await Promise.race([chrome.tabs.sendMessage(id,message),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('页面脚本响应超时')),timeout);})]);}finally{clearTimeout(timer);}
 }
@@ -71,6 +78,7 @@ async function step(){
  if(restriction){s.status='paused';s.reason=restriction.reason;await save(s);await chrome.alarms.clear(ALARM);return;}
  const stepStarted=Date.now();let successfulWork=false;
  try{
+  s.config=configuration(s.config);await pacing();
   if(s.cityIndex>=s.config.cities.length)throw Error('城市队列已经结束');
   const city=s.config.cities[s.cityIndex],t=await listTab(s);s.currentCity=city;
   if(s.phase==='setup'){
@@ -91,7 +99,7 @@ async function step(){
     const started=Date.now();
     // Load a small bounded group per wakeup. Persist each result before the
     // next scroll so virtualized cards and interruptions cannot drop rows.
-    for(let batch=0;batch<3;batch++){
+    for(let batch=0;batch<1;batch++){
      const more=await send(t.id,'scroll',{city,keyword:s.config.keyword});
      const added=discover(s,more.cards||[]),changed=!!(added||more.changed);
      scan.stalls=changed?0:scan.stalls+1;if(more.end)scan.end=more.end;
@@ -115,7 +123,7 @@ async function step(){
     const [key,e]=pending;s.currentJob=e.job.title;s.currentKey=key;s.phase='collect';await save(s);
     let url;try{url=canonical(e.job.company_url,'company')}catch(err){e.status='review';e.reason='岗位没有可核验公司详情链接';log(s,e.job.title+'：'+e.reason);await save(s);await schedule(s);return;}
     let fetched=false;if(!s.companies[url]){
-     fetched=true;
+     fetched=true;const pace=await pacing();pace.companies++;await chrome.storage.local.set({pacingSession:pace});
      if(s.detailTab&&!await chrome.tabs.get(s.detailTab.id).catch(()=>null))s.detailTab=null;
      if(s.detailTab&&s.detailTab.url!==url)await closeOwned(s);
      if(!s.detailTab){const detail=await chrome.tabs.create({url,active:false});s.detailTab={id:detail.id,url};await save(s);}
@@ -123,7 +131,7 @@ async function step(){
      catch(err){if(/工商全称未展示|信用代码需核查/.test(err.message)){e.status='review';e.reason=err.message;log(s,e.job.title+'：'+err.message);await closeOwned(s);await save(s);await schedule(s);return;}throw err;}
     }
     commit(s,key,s.companies[url]);log(s,'已保存：'+e.job.title+' / '+e.row[1]);await save(s);await closeOwned(s);s.phase='scan';
-    if(fetched&&item<4)await new Promise(r=>setTimeout(r,1000));
+    if(fetched)break;
    }else if(scan.end){
     const reviews=Object.values(s.jobs).filter(e=>e.job.city===city&&e.status==='review');
     if(reviews.length){s.status='paused';s.reason=city+'还有 '+reviews.length+' 条待核查，请点“重查未完成”';log(s,s.reason);await save(s);await chrome.alarms.clear(ALARM);return;}
@@ -194,6 +202,7 @@ async function control(m){
   }
   if(s.status==='running')return {task:s};
   if(['complete','incomplete'].includes(s.status))throw Error('本轮已结束，未完成城市请使用“重查未完成”');
+  await pacing();s.config=configuration(s.config);
   s.phase='setup';s.connectionRetries=0;s.scopeRetries=0;
   if(s.scans?.[s.config.cities[s.cityIndex]])s.scans[s.config.cities[s.cityIndex]].stalls=0;
   s.status='running';s.reason='';s.startedAt||=Date.now();log(s,'从 '+s.config.cities[s.cityIndex]+' 断点继续');await save(s);await schedule(s);return {task:s};

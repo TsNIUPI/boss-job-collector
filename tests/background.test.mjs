@@ -43,22 +43,22 @@ test('extension upgrade restores hidden historical Beijing rows without moving S
  const job={...jobs(1,1)[0],city:'北京'};h.stored.archive_legacy={config:{keyword:'剪辑',cities:['北京']},jobs:{['北京|'+job.url]:{job,status:'saved',row:[job.title,'北京公司','','','','','北京']}},companies:{}};
  await import('../background.js?upgrade='+Math.random());await settle();assert.equal(Object.values(h.stored.task.jobs)[0].row[6],'北京');assert.equal(h.stored.task.config.cities[0],'上海');assert.equal(h.stored.task.cityIndex,0);assert.equal(h.stored.task.status,'paused');
 });
-test('five distinct companies processed sequentially per wakeup, without dashboard or focused tabs',async()=>{
+test('one new company per wakeup without dashboard or focused tabs',async()=>{
  const h=await harness(false,async()=>({cards:jobs(1,8).map((j,i)=>({...j,company_url:'https://www.zhipin.com/gongsi/c'+i+'.html'})),end:'没有更多'}));
  await h.control({action:'new',config:{keyword:'剪辑',cities:['北京']}});await h.control({action:'resume'});await h.tick();await h.tick();
- assert.equal(h.requests.filter(x=>x==='company').length,5);assert.equal(Object.values(h.stored.task.jobs).filter(e=>e.status==='saved').length,5);assert.ok([...h.tabs.values()].every(t=>t.active===false));assert.equal(h.tabs.size,1);
+ assert.equal(h.requests.filter(x=>x==='company').length,1);assert.equal(Object.values(h.stored.task.jobs).filter(e=>e.status==='saved').length,1);assert.ok([...h.tabs.values()].every(t=>t.active===false));assert.equal(h.tabs.size,1);
 });
 test('company cache saves remaining jobs without repeat company requests; city settings retain Beijing rows',async()=>{
  const h=await harness(false,async()=>({cards:jobs(1,25),end:'没有更多'}));await h.control({action:'new',config:{keyword:'剪辑',cities:['北京']}});await h.control({action:'resume'});await h.tick();await h.tick();await h.tick();
  assert.equal(h.requests.filter(x=>x==='company').length,1);assert.equal(Object.values(h.stored.task.jobs).filter(e=>e.status==='saved').length,25);
  const r=await h.control({action:'new',config:{keyword:'剪辑',cities:['上海']}});assert.equal(r.ok,true);assert.equal(Object.values(r.task.jobs).filter(e=>e.status==='saved').length,25);assert.equal(r.task.currentCity,'上海');
 });
-test('one wakeup loads three batches and checkpoints each before next scroll',async()=>{
+test('one wakeup loads one batch and preserves discovered rows',async()=>{
  let page=0;const h=await harness(false,async(m,stored)=>{
   if(m.action==='scroll'){assert.equal(Object.keys(stored.task.jobs).length,(page+1)*15);page++;}
   return {cards:jobs(page*15+1,page*15+15),changed:m.action==='scroll',end:page===3?'没有更多':''};
  });await h.control({action:'new',config:{keyword:'剪辑',cities:['北京']}});await h.control({action:'resume'});await h.tick();await h.tick();
- assert.equal(page,3);assert.equal(Object.keys(h.stored.task.jobs).length,60);assert.equal(Object.values(h.stored.task.jobs).filter(e=>e.status==='saved').length,5);
+ assert.equal(page,1);assert.equal(Object.keys(h.stored.task.jobs).length,30);assert.equal(Object.values(h.stored.task.jobs).filter(e=>e.status==='saved').length,1);
 });
 test('replaying previously saved pages reaches new jobs without false loading stalls',async()=>{
  let page=0;const h=await harness(false,async m=>{if(m.action==='scroll')page++;return {cards:jobs(page*15+1,page*15+15),changed:m.action==='scroll',end:page>=5?'没有更多了':''};});
@@ -89,7 +89,7 @@ test('loads beyond first 15 before collecting and persists virtualized rows thro
  let scrolled=false;
  const h=await harness(false,async(m,stored)=>{if(m.action==='scroll'){assert.equal(Object.keys(stored.task.jobs).length,15);scrolled=true;}return {cards:scrolled?jobs(16,30):jobs(1,15),end:scrolled?'没有更多了':''};});
  await h.control({action:'new',config:{keyword:'剪辑',cities:['北京']}});await h.control({action:'resume'});await h.tick();await h.tick();
- assert.equal(Object.keys(h.stored.task.jobs).length,30);assert.equal(Object.values(h.stored.task.jobs).filter(j=>j.status==='saved').length,5);
+ assert.equal(Object.keys(h.stored.task.jobs).length,30);assert.equal(Object.values(h.stored.task.jobs).filter(j=>j.status==='saved').length,1);
  await h.control({action:'pause'});await h.control({action:'resume'});for(let i=0;i<31;i++)await h.tick();
  assert.equal(h.stored.task.status,'complete');assert.equal(Object.values(h.stored.task.jobs).filter(j=>j.status==='saved').length,30);
 });
@@ -108,3 +108,6 @@ test('platform restriction survives new tasks, blocks retry and leaves stored ro
 test('undated platform restriction needs explicit clearance and never auto resumes',async()=>{const h=await harness();await h.control({action:'new',config:{keyword:'剪辑',cities:['北京']}});h.stored.platformRestriction={reason:'平台限制访问，请按页面提示处理',until:null};assert.equal((await h.control({action:'resume'})).ok,false);assert.equal((await h.control({action:'clearRestriction'})).ok,true);assert.equal(h.stored.task.status,'paused');assert.equal(h.stored.platformRestriction,null);assert.equal((await h.control({action:'resume'})).ok,true);});
 
 test('loading probe restriction halts immediately without page reload or recovery',async()=>{const h=await harness();await h.control({action:'new',config:{keyword:'剪辑',cities:['北京']}});await h.control({action:'resume'});await h.tick();for(const t of h.tabs.values())t.status='loading';let navigated=0;chrome.tabs.update=async()=>{navigated++;};chrome.tabs.sendMessage=async()=>({ok:false,error:'平台限制访问；恢复时间：2099-10-14 14:30'});await h.tick();assert.equal(h.stored.task.status,'paused');assert.ok(h.stored.platformRestriction);assert.equal(navigated,0);assert.equal(h.stored.task.connectionRetries,0);});
+
+test('session company budget pauses without another request and persists across new task and startup',async()=>{const h=await harness();await h.control({action:'new',config:{keyword:'剪辑',cities:['北京']}});await h.control({action:'resume'});await h.tick();await h.tick();const saved=structuredClone(h.stored.task.jobs);h.stored.pacingSession.companies=20;const before=h.requests.length;await h.tick();assert.equal(h.stored.task.status,'paused');assert.equal(h.requests.length,before);assert.deepEqual(h.stored.task.jobs,saved);assert.ok(h.stored.pacingSession.restUntil>Date.now());await h.control({action:'new',config:{keyword:'运营',cities:['上海']}});assert.equal((await h.control({action:'resume'})).ok,false);h.events.startup[0]();await settle();assert.equal(h.stored.task.status,'paused');});
+test('elapsed session budget pauses before navigation; rest expiry requires explicit resume',async()=>{const h=await harness();await h.control({action:'new',config:{keyword:'剪辑',cities:['北京']}});await h.control({action:'resume'});h.stored.pacingSession.startedAt=Date.now()-31*60*1000;await h.tick();assert.equal(h.stored.task.status,'paused');assert.equal(h.tabs.size,0);h.stored.pacingSession.restUntil=Date.now()-1;await h.tick();assert.equal(h.stored.task.status,'paused');assert.equal((await h.control({action:'resume'})).ok,true);assert.equal(h.stored.pacingSession.companies,0);assert.equal(h.stored.pacingSession.restUntil,0);});

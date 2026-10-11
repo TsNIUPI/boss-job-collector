@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "BOSS岗位企业采集助手",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "可配置岗位关键词及地区，采集可见BOSS岗位与工商信息，支持进度、暂停续跑和Excel导出。",
   "minimum_chrome_version": "120",
   "permissions": [

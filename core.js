@@ -8,7 +8,7 @@ export function canonical(url,kind){
 export function configuration(raw){
  const keyword=String(raw.keyword||'').trim();if(!keyword||keyword.length>80)throw Error('请输入1—80字的岗位关键词');
  const cities=[...new Set(raw.cities||[])];if(!cities.length||cities.some(c=>!CITIES.includes(c)))throw Error('至少选择一个支持的城市');
- return {keyword,cities,interval:Math.max(30,Math.min(300,Number(raw.interval)||30)),stallLimit:Math.max(3,Math.min(10,Number(raw.stallLimit)||4))};
+ return {keyword,cities,interval:Math.max(60,Math.min(300,Number(raw.interval)||120)),stallLimit:Math.max(3,Math.min(10,Number(raw.stallLimit)||4))};
 }
 export function fresh(config){return {version:1,id:crypto.randomUUID(),config:configuration(config),status:'paused',cityIndex:0,phase:'setup',jobs:{},companies:{},cities:{},tabId:null,detailTab:null,stalls:0,logs:[],startedAt:null,updatedAt:Date.now(),reason:''};}
 export function discover(s,jobs){

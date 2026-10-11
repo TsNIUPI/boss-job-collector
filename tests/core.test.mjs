@@ -14,7 +14,7 @@ test('same-keyword historical tasks recover saved rows; other keywords stay sepa
  const other=fresh({...config,keyword:'运营'});const recovered=configureTask(other,{...config,cities:['上海']},[old]);assert.equal(exportedRows(recovered).length,1);assert.equal(recovered.config.keyword,config.keyword);
  const independent=configureTask(old,{...config,keyword:'运营'},[old]);assert.equal(exportedRows(independent).length,0);
 });
-test('configuration excludes nationwide and clamps cadence',()=>{assert.throws(()=>configuration({...config,cities:['全国']}));assert.equal(configuration({...config,interval:1}).interval,30);assert.throws(()=>configuration({...config,keyword:''}));});
+test('configuration excludes nationwide and clamps cadence',()=>{assert.throws(()=>configuration({...config,cities:['全国']}));assert.equal(configuration({...config,interval:1}).interval,60);assert.throws(()=>configuration({...config,keyword:''}));});
 test('job URLs canonicalize and other domains are rejected',()=>{assert.equal(canonical(job.url,'job'),'https://www.zhipin.com/job_detail/abc123.html');assert.throws(()=>canonical('https://evil.test/job_detail/abc123.html','job'));assert.throws(()=>canonical('https://www.zhipin.com/web/geek/jobs','company'));});
 test('same job deduplicates after checkpoint reload',()=>{let s=fresh(config);assert.equal(discover(s,[job]),1);s=JSON.parse(JSON.stringify(s));assert.equal(discover(s,[job]),0);assert.equal(stats(s).found,1);});
 test('cross-city job location cannot be saved in selected city',()=>{const s=fresh(config);discover(s,[{...job,location:'上海·浦东'}]);assert.equal(Object.values(s.jobs)[0].status,'review');});
