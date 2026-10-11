@@ -17,6 +17,7 @@ async function send(id,action,args={}){
    // Fonts, ads or images may keep Chrome "loading" after the usable DOM is
    // ready. Probe our listener rather than waiting for unrelated resources.
    let probe;try{probe=await pageMessage(id,{channel:'boss-collector',action:'ping'},3000);}catch(e){if(e.message==='页面脚本响应超时'){last=e.message;break;}}
+   if(probe?.ok===false&&probe.error)throw Error(probe.error);
    if(!probe?.ok||!probe.data?.ready){last='页面仍在加载';await new Promise(r=>setTimeout(r,500));continue;}
   }
   let r;try{r=await pageMessage(id,{channel:'boss-collector',action,...args});}catch(e){
@@ -66,6 +67,8 @@ async function closeOwned(s){
 }
 async function step(){
  const s=await load();if(!s||s.status!=='running')return;
+ const restriction=(await chrome.storage.local.get('platformRestriction')).platformRestriction;
+ if(restriction){s.status='paused';s.reason=restriction.reason;await save(s);await chrome.alarms.clear(ALARM);return;}
  const stepStarted=Date.now();let successfulWork=false;
  try{
   if(s.cityIndex>=s.config.cities.length)throw Error('城市队列已经结束');
@@ -134,6 +137,11 @@ async function step(){
   }
   if(successfulWork)s.connectionRetries=0;s.scopeRetries=0;s.reason='';await save(s);await schedule(s);
  }catch(e){
+  if(/平台限制访问/.test(e.message)){
+   const time=e.message.match(/恢复时间：(\d{4}-\d{1,2}-\d{1,2}) (\d{1,2}:\d{2})/);
+   const until=time?Date.parse(time[1]+'T'+time[2].padStart(5,'0')+':00+08:00'):null;
+   await chrome.storage.local.set({platformRestriction:{reason:e.message,until:Number.isFinite(until)?until:null,detectedAt:Date.now()}});
+  }
   if(/筛选需恢复|关键词或地区已变化/.test(e.message)&&((s.scopeRetries||0)<3)){
    s.scopeRetries=(s.scopeRetries||0)+1;s.phase='setup';s.reason='正在自动恢复 '+s.currentCity+' / '+s.config.keyword;
    log(s,s.reason+'；'+e.message);await save(s);await schedule(s);return;
@@ -172,7 +180,18 @@ async function control(m){
   s=configureTask(s,m.config,Object.entries(all).filter(([k])=>k.startsWith('archive_')).map(([,t])=>t));await save(s);return {task:s};
  }
  if(!s)throw Error('请先保存任务设置');
+ if(m.action==='clearRestriction'){
+  const restriction=(await chrome.storage.local.get('platformRestriction')).platformRestriction;
+  if(restriction?.until&&Date.now()<restriction.until)throw Error(restriction.reason);
+  await chrome.storage.local.set({platformRestriction:null});s.status='paused';s.reason='已确认限制解除，点击继续恢复断点';await save(s);return {task:s};
+ }
  if(m.action==='resume'){
+  const restriction=(await chrome.storage.local.get('platformRestriction')).platformRestriction;
+  if(restriction){
+   if(!restriction.until||Date.now()<restriction.until)throw Error(restriction.reason);
+   // Expiry permits only an explicit user resume. No automatic restart.
+   await chrome.storage.local.set({platformRestriction:null});
+  }
   if(s.status==='running')return {task:s};
   if(['complete','incomplete'].includes(s.status))throw Error('本轮已结束，未完成城市请使用“重查未完成”');
   s.phase='setup';s.connectionRetries=0;s.scopeRetries=0;

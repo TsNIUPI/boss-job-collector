@@ -1,6 +1,8 @@
 import {CITIES,HEADERS,stats,exportedRows} from './core.js';
 import {xlsxBlob,csvText} from './xlsx.js';
 const $=id=>document.getElementById(id);let task=null;
+const restrictionButton=document.createElement('button');restrictionButton.textContent='我已确认限制解除';restrictionButton.hidden=true;$('reason').after(restrictionButton);
+restrictionButton.onclick=async()=>{if(!confirm('请仅在平台提示的恢复时间已到、且你确认可正常访问BOSS后操作。确认解除限制？'))return;try{const r=await command('clearRestriction');draw(r.task);}catch(e){errors(e);}};
 for(const city of CITIES){const label=document.createElement('label'),box=document.createElement('input');box.type='checkbox';box.value=city;box.checked=city==='北京';label.append(box,document.createTextNode(city));$('cities').append(label);}
 $('all').onclick=()=>document.querySelectorAll('#cities input').forEach(b=>b.checked=true);
 $('none').onclick=()=>document.querySelectorAll('#cities input').forEach(b=>b.checked=false);
@@ -30,6 +32,7 @@ function draw(s){
  $('progress').value=100*v.localSaved/Math.max(1,v.localFound);
  $('local').textContent=`本城已保存 ${v.localSaved} / 已发现 ${v.localFound} 条 · 总数：${v.confirmed?v.localFound:'加载中'}`;
  $('reason').textContent=s.reason;$('reason').style.display=s.reason?'block':'none';
+ restrictionButton.hidden=s.status!=='paused'||!String(s.reason).includes('平台限制访问');
  $('city-status').replaceChildren();for(const c of s.config.cities){const span=document.createElement('span'),entry=s.cities[c];span.textContent=c+' · '+(entry?.complete?'完成':entry?'待补查':c===s.currentCity?'采集中':'等待');span.className=entry?.complete?'done':entry?'missing':'';$('city-status').append(span);}
  const filter=$('result-city').value;$('result-city').replaceChildren(new Option('全部地区',''));for(const c of [...new Set(exportedRows(s).map(row=>row[6]))])$('result-city').append(new Option(c,c));$('result-city').value=[...$('result-city').options].some(o=>o.value===filter)?filter:'';results();
  $('logs').replaceChildren();const reviews=Object.values(s.jobs).filter(e=>e.status==='review');

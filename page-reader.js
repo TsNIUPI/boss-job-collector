@@ -1,6 +1,10 @@
 /* Only displayed page text and links; no network requests or hidden API data. */
 globalThis.BossPage={
  gate(text,url){
+  if(/访问受限|账[号户]存在异常|帐[号户]存在异常|暂时被限制访问|暂时无法访问此页面/.test(text)){
+   const time=text.match(/(\d{4}-\d{1,2}-\d{1,2})\s*(\d{1,2}:\d{2})\s*恢复/);
+   return '平台限制访问，已停止采集，请勿刷新或重试'+(time?'；恢复时间：'+time[1]+' '+time[2]:'；请按页面提示处理后再继续');
+  }
   if(/\/login|\/passport/.test(new URL(url).pathname)||/登录后查看更多|请先登录后/.test(text))return '需要登录，请在原页面登录后再继续';
   if(/安全验证|访问过于频繁|请完成.{0,8}验证|账号存在异常|请求过于频繁/.test(text))return '网页要求验证或限制访问，请手动处理后继续';
   return '';
