@@ -1,0 +1,50 @@
+{
+  "manifest_version": 3,
+  "name": "BOSS岗位企业采集助手",
+  "version": "0.1.7",
+  "description": "可配置岗位关键词及地区，采集可见BOSS岗位与工商信息，支持进度、暂停续跑和Excel导出。",
+  "minimum_chrome_version": "120",
+  "permissions": [
+    "storage",
+    "alarms",
+    "tabs",
+    "unlimitedStorage"
+  ],
+  "host_permissions": [
+    "https://www.zhipin.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "打开BOSS采集工作台",
+    "default_icon": {
+      "16": "icons/boss16.png",
+      "32": "icons/boss32.png",
+      "48": "icons/boss48.png",
+      "128": "icons/boss128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.zhipin.com/*"
+      ],
+      "js": [
+        "page-reader.js",
+        "content.js"
+      ],
+      "run_at": "document_start"
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  },
+  "icons": {
+    "16": "icons/boss16.png",
+    "32": "icons/boss32.png",
+    "48": "icons/boss48.png",
+    "128": "icons/boss128.png"
+  }
+}

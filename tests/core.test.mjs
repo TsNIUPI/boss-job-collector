@@ -1,0 +1,30 @@
+import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs/promises';import vm from 'node:vm';
+import {fresh,discover,commit,stats,finishCity,canonical,configuration,restoreBackup,exportedRows,configureTask} from '../core.js';
+import {csvText,xlsxBlob} from '../xlsx.js';
+const config={keyword:'tiktok剪辑',cities:['北京','上海'],interval:30};
+const job={title:'视频剪辑',url:'https://www.zhipin.com/job_detail/abc123.html?ka=x',company_url:'https://www.zhipin.com/gongsi/real.html',location:'北京·朝阳'};
+test('switching Beijing to Shanghai and back keeps unified rows and completed-city checkpoint',()=>{
+ const beijing=fresh({...config,cities:['北京']});discover(beijing,[job]);commit(beijing,Object.keys(beijing.jobs)[0],{name:'北京公司'});finishCity(beijing,true);
+ const shanghai=configureTask(beijing,{...config,cities:['上海']});assert.equal(exportedRows(shanghai)[0][6],'北京');assert.equal(shanghai.id,beijing.id);assert.equal(shanghai.currentCity,'上海');
+ discover(shanghai,[{...job,location:'上海·浦东'}]);commit(shanghai,Object.keys(shanghai.jobs).find(k=>k.startsWith('上海|')),{name:'上海公司'});
+ const again=configureTask(shanghai,{...config,cities:['北京']});assert.equal(exportedRows(again).length,2);assert.equal(again.status,'complete');assert.ok(again.cities['北京'].complete);
+});
+test('same-keyword historical tasks recover saved rows; other keywords stay separate',()=>{
+ const old=fresh({...config,cities:['北京']});discover(old,[job]);commit(old,Object.keys(old.jobs)[0],{name:'历史北京公司'});
+ const other=fresh({...config,keyword:'运营'});const recovered=configureTask(other,{...config,cities:['上海']},[old]);assert.equal(exportedRows(recovered).length,1);assert.equal(recovered.config.keyword,config.keyword);
+ const independent=configureTask(old,{...config,keyword:'运营'},[old]);assert.equal(exportedRows(independent).length,0);
+});
+test('configuration excludes nationwide and clamps cadence',()=>{assert.throws(()=>configuration({...config,cities:['全国']}));assert.equal(configuration({...config,interval:1}).interval,30);assert.throws(()=>configuration({...config,keyword:''}));});
+test('job URLs canonicalize and other domains are rejected',()=>{assert.equal(canonical(job.url,'job'),'https://www.zhipin.com/job_detail/abc123.html');assert.throws(()=>canonical('https://evil.test/job_detail/abc123.html','job'));assert.throws(()=>canonical('https://www.zhipin.com/web/geek/jobs','company'));});
+test('same job deduplicates after checkpoint reload',()=>{let s=fresh(config);assert.equal(discover(s,[job]),1);s=JSON.parse(JSON.stringify(s));assert.equal(discover(s,[job]),0);assert.equal(stats(s).found,1);});
+test('cross-city job location cannot be saved in selected city',()=>{const s=fresh(config);discover(s,[{...job,location:'上海·浦东'}]);assert.equal(Object.values(s.jobs)[0].status,'review');});
+test('company cache keeps multiple jobs and distinct regions',()=>{const s=fresh(config);discover(s,[job,{...job,url:job.url.replace('abc123','def456')}]);for(const key of Object.keys(s.jobs))commit(s,key,{name:'测试有限公司',credit:'91310120332335763Y'});assert.equal(stats(s).saved,2);assert.equal(stats(s).companies,1);});
+test('a stalled list never marks collection complete',()=>{const s=fresh({...config,cities:['北京']});finishCity(s,false,'末尾不明确');assert.equal(s.status,'incomplete');assert.equal(s.cities.北京.complete,false);});
+test('explicit end with review records remains incomplete',()=>{const s=fresh({...config,cities:['北京']});discover(s,[{...job,location:''}]);finishCity(s,true);assert.equal(s.status,'incomplete');assert.equal(s.cities.北京.endConfirmed,true);});
+test('all saved and end marker complete the selected city',()=>{const s=fresh({...config,cities:['北京']});discover(s,[job]);commit(s,Object.keys(s.jobs)[0],{name:'测试有限公司'});finishCity(s,true);assert.equal(s.status,'complete');});
+test('malformed credit and missing company full name never commit',()=>{const s=fresh(config);discover(s,[job]);const k=Object.keys(s.jobs)[0];assert.throws(()=>commit(s,k,{name:'公司',credit:'123'}));assert.throws(()=>commit(s,k,{name:''}));assert.equal(exportedRows(s).length,0);});
+test('backup import resets tabs and restores saved rows paused',()=>{const s=fresh(config);discover(s,[job]);commit(s,Object.keys(s.jobs)[0],{name:'测试有限公司'});s.status='running';s.tabId=999;const r=restoreBackup(JSON.parse(JSON.stringify(s)));assert.equal(r.status,'paused');assert.equal(r.tabId,null);assert.equal(stats(r).saved,1);});
+test('backup rejects foreign URL and row layout tampering',()=>{const s=fresh(config);discover(s,[job]);commit(s,Object.keys(s.jobs)[0],{name:'测试有限公司'});Object.values(s.jobs)[0].row[6]='上海';assert.throws(()=>restoreBackup(s));});
+test('CSV prevents formula execution and escapes quotes',()=>{const s=csvText([['=1+1','a"b','中文']]);assert.ok(s.includes("'=1+1"));assert.ok(s.includes('a""b'));});
+test('page text parser and login/security gate',async()=>{const ctx={URL};vm.createContext(ctx);vm.runInContext(await fs.readFile(new URL('../page-reader.js',import.meta.url),'utf8'),ctx);const P=ctx.BossPage;assert.ok(P.gate('请完成安全验证','https://www.zhipin.com/gongsi/a.html'));assert.equal(P.gate('首页 登录 招聘信息','https://www.zhipin.com/gongsi/a.html'),'');const d=P.parseCompany('工商信息\n企业名称：\n测试有限公司\n法定代表人：张三\n注册资本：100万元\n成立时间：2020-01-01\n统一社会信用代码：91310120332335763Y');assert.equal(d.name,'测试有限公司');assert.equal(d.credit,'91310120332335763Y');assert.throws(()=>P.parseCompany('公司简称：测试'));});
+test('manifest restricts host and forbids remote code',async()=>{const m=JSON.parse(await fs.readFile(new URL('../manifest.json',import.meta.url)));assert.deepEqual(m.host_permissions,['https://www.zhipin.com/*']);assert.equal(m.manifest_version,3);assert.ok(!m.permissions.includes('cookies'));assert.ok(m.content_security_policy.extension_pages.includes("script-src 'self'"));});

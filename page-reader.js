@@ -1,0 +1,24 @@
+/* Only displayed page text and links; no network requests or hidden API data. */
+globalThis.BossPage={
+ gate(text,url){
+  if(/\/login|\/passport/.test(new URL(url).pathname)||/登录后查看更多|请先登录后/.test(text))return '需要登录，请在原页面登录后再继续';
+  if(/安全验证|访问过于频繁|请完成.{0,8}验证|账号存在异常|请求过于频繁/.test(text))return '网页要求验证或限制访问，请手动处理后继续';
+  return '';
+ },
+ parseCompany(text){
+  const fields={};for(const [key,labels] of Object.entries({name:'企业名称|公司全称',legal:'法定代表人',capital:'注册资本|注册资金',date:'成立时间|成立日期',credit:'统一社会信用代码'})){
+   const m=text.match(new RegExp('(?:^|\\n)\\s*(?:'+labels+')[：:]\\s*([^\\n]+)'));fields[key]=m?.[1].trim()||'';
+  }
+  if(!fields.name)throw Error('BOSS工商全称未展示，待核查');
+  if(fields.credit&&['未展示','—','-','暂无'].includes(fields.credit))fields.credit='';
+  if(fields.credit&&!/^[A-Z0-9]{18}$/.test(fields.credit))throw Error('统一社会信用代码需核查');
+  return fields;
+ },
+ visible(el){return !!el?.getClientRects().length;},
+ list(city){
+  return [...document.querySelectorAll('.job-card-box')].filter(this.visible).map(e=>{
+   const a=e.querySelector('a.job-name'),c=[...e.querySelectorAll('a[href]')].find(n=>n.href.includes('/gongsi/'));
+   return {title:a?.innerText.trim()||'',url:a?.href||'',company_url:c?.href||'',location:e.innerText.split('\n').map(t=>t.trim()).find(t=>new RegExp('^'+city+'(?:市)?(?:[·\\s]|$)').test(t))||''};
+  }).filter(j=>j.url);
+ }
+};
