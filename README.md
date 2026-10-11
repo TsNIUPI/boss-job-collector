@@ -6,6 +6,8 @@
 
 当前版本：**0.1.7**。无需影刀，也不需要安装 Python 或 Node.js 才能使用。
 
+**[点击下载 v0.1.7 安装包](https://github.com/TsNIUPI/boss-job-collector/releases/download/v0.1.7/boss-job-collector-v0.1.7.zip)** · [查看版本更新](https://github.com/TsNIUPI/boss-job-collector/releases)
+
 ## 可以做什么
 
 | 功能 | 对你有什么用 |
