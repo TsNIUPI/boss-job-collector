@@ -10,8 +10,17 @@ globalThis.BossPage={
   return '';
  },
  parseCompany(text){
-  const fields={};for(const [key,labels] of Object.entries({name:'企业名称|公司全称',legal:'法定代表人',capital:'注册资本|注册资金',date:'成立时间|成立日期',credit:'统一社会信用代码'})){
-   const m=text.match(new RegExp('(?:^|\\n)\\s*(?:'+labels+')[：:]\\s*([^\\n]+)'));fields[key]=m?.[1].trim()||'';
+  const lines=String(text).split(/\r?\n/).map(v=>v.trim()),labels={name:'企业名称|公司全称',legal:'法定代表人',capital:'注册资本|注册资金',date:'成立时间|成立日期',credit:'统一社会信用代码'};
+  const anyLabel=new RegExp('^(?:'+Object.values(labels).join('|')+')[：:]');
+  const fields={};for(const [key,names] of Object.entries(labels)){
+   fields[key]='';const re=new RegExp('^(?:'+names+')[：:][ \\t]*(.*)$');
+   for(let i=0;i<lines.length;i++){
+    const match=lines[i].match(re);if(!match)continue;
+    let value=match[1].trim();
+    if(!value){let n=i+1;while(n<lines.length&&!lines[n])n++;if(n<lines.length&&!anyLabel.test(lines[n]))value=lines[n];}
+    if(!anyLabel.test(value)&&!['未展示','—','-','暂无'].includes(value))fields[key]=value;
+    break;
+   }
   }
   if(!fields.name)throw Error('BOSS工商全称未展示，待核查');
   if(fields.credit&&['未展示','—','-','暂无'].includes(fields.credit))fields.credit='';

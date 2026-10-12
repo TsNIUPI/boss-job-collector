@@ -1,8 +1,61 @@
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs/promises';import vm from 'node:vm';
-import {fresh,discover,commit,stats,finishCity,canonical,configuration,restoreBackup,exportedRows,configureTask} from '../core.js';
+import {fresh,discover,commit,stats,finishCity,canonical,configuration,restoreBackup,exportedRows,configureTask,waitSeconds,nextPending,companyCache,companyData} from '../core.js';
 import {csvText,xlsxBlob} from '../xlsx.js';
 const config={keyword:'tiktok剪辑',cities:['北京','上海'],interval:30};
 const job={title:'视频剪辑',url:'https://www.zhipin.com/job_detail/abc123.html?ka=x',company_url:'https://www.zhipin.com/gongsi/real.html',location:'北京·朝阳'};
+test('slider configuration supports zero and clamps to 0–100 jobs and 10–100 seconds',()=>{
+ assert.equal(configuration({...config,target:0}).target,0);assert.equal(configuration({...config,target:101}).target,100);assert.equal(configuration({...config,target:-1}).target,0);
+ assert.equal(configuration({...config,interval:101}).interval,100);assert.equal(configuration({...config,interval:5}).interval,10);assert.equal(configuration(config).target,50);
+ for(const interval of [10,15,60,99,100])for(const random of [0,0.5,0.999999]){const value=waitSeconds({interval,varied:true},()=>random);assert.ok(value>=interval&&value<=100);}
+});
+test('shared cache canonicalizes company links and restores saved rows without matching by company name',()=>{
+ const a=fresh(config);discover(a,[job]);commit(a,Object.keys(a.jobs)[0],{name:'公司甲'});
+ const cache=companyCache([a],{[job.company_url+'?ka=other']:{name:'公司甲',legal:'张三'},'https://evil.test/gongsi/real.html':{name:'公司甲'}});
+ assert.equal(Object.keys(cache).length,1);assert.equal(cache[job.company_url].legal,'张三');
+ assert.equal(cache['https://www.zhipin.com/gongsi/other.html'],undefined);
+});
+test('invalid cached fields are rejected and newest verified snapshot wins without mixing companies',()=>{
+ assert.equal(companyData({name:'未展示'}),null);assert.equal(companyData({name:'法定代表人：张三'}),null);assert.equal(companyData({name:'公司甲',credit:'invalid'}),null);
+ const cache=companyCache([{companies:{[job.company_url]:{name:'新公司',savedAt:200}}}],{[job.company_url]:{name:'旧公司',legal:'旧法人',savedAt:100}});
+ assert.equal(cache[job.company_url].name,'新公司');assert.equal(cache[job.company_url].legal,'');
+});
+test('companies with missing credit codes count separately and reuse counters track cache saves',()=>{
+ const s=fresh(config);discover(s,[job,{...job,url:job.url.replace('abc123','def456')}]);const keys=Object.keys(s.jobs);
+ commit(s,keys[0],{name:'甲公司'});commit(s,keys[1],{name:'乙公司'},'cache');assert.equal(stats(s).companies,2);assert.equal(stats(s).reused,1);
+});
+test('commit refuses a wrong-city pending job even after manual retry',()=>{
+ const s=fresh(config);discover(s,[{...job,location:'上海·浦东'}]);const key=Object.keys(s.jobs)[0];s.jobs[key].status='pending';
+ assert.throws(()=>commit(s,key,{name:'公司'}),/实际工作城市/);assert.equal(exportedRows(s).length,0);
+});
+test('backup restores valid company data and retains completed cities while reopening earliest incomplete city',()=>{
+ const s=fresh(config);discover(s,[job]);commit(s,Object.keys(s.jobs)[0],{name:'公司'});finishCity(s,true);
+ const restored=restoreBackup(s);assert.equal(restored.companies[job.company_url].name,'公司');assert.equal(restored.cities['北京'].complete,true);assert.equal(restored.cityIndex,1);
+ const raw=fresh(config);raw.cityIndex=1;const rewind=restoreBackup(raw);assert.equal(rewind.cityIndex,0);
+});
+test('missing company page fields cannot consume the next label as their value',async()=>{
+ const ctx={URL};vm.createContext(ctx);vm.runInContext(await fs.readFile(new URL('../page-reader.js',import.meta.url),'utf8'),ctx);
+ assert.throws(()=>ctx.BossPage.parseCompany('企业名称：\n法定代表人：张三'),/工商全称/);
+ assert.throws(()=>ctx.BossPage.parseCompany('企业名称：暂无\n法定代表人：张三'),/工商全称/);
+ const row=ctx.BossPage.parseCompany('企业名称：\n公司甲\n注册资本：\n成立时间：2020-01-01');assert.equal(row.name,'公司甲');assert.equal(row.capital,'');assert.equal(row.date,'2020-01-01');
+});
+test('variable waiting never shortens the configured interval and can be disabled',()=>{
+ const c=configuration({...config,interval:60});
+ assert.equal(waitSeconds(c,()=>0),60);assert.equal(waitSeconds(c,()=>0.5),80);assert.equal(waitSeconds(c,()=>1),100);
+ assert.equal(waitSeconds({...c,varied:false},()=>0.9),60);
+});
+test('varied queue selection visits every pending local job once without touching saved or other cities',()=>{
+ const s=fresh(config);discover(s,[job,{...job,url:job.url.replace('abc123','def456')},{...job,url:job.url.replace('abc123','ghi789')}]);
+ const keys=Object.keys(s.jobs);s.jobs.other={job:{city:'上海'},status:'pending'};
+ assert.equal(nextPending(s,()=>0.99)[0],keys[2]);
+ const visited=[];while(nextPending(s,()=>0.5)){const [key]=nextPending(s,()=>0.5);visited.push(key);commit(s,key,{name:'测试公司'});}
+ assert.equal(new Set(visited).size,3);assert.equal(s.jobs.other.status,'pending');
+});
+test('rescan repairs missing company links without corrupting saved rows or accepting wrong-city cards',()=>{
+ const s=fresh(config);discover(s,[{...job,company_url:''}]);const key=Object.keys(s.jobs)[0];
+ discover(s,[{...job,location:'上海·浦东'}]);assert.equal(s.jobs[key].job.company_url,'');
+ discover(s,[job]);assert.equal(s.jobs[key].job.company_url,job.company_url);
+ commit(s,key,{name:'已保存公司'});const before=structuredClone(s.jobs[key]);discover(s,[{...job,title:'不同岗位'}]);assert.deepEqual(s.jobs[key],before);
+});
 test('switching Beijing to Shanghai and back keeps unified rows and completed-city checkpoint',()=>{
  const beijing=fresh({...config,cities:['北京']});discover(beijing,[job]);commit(beijing,Object.keys(beijing.jobs)[0],{name:'北京公司'});finishCity(beijing,true);
  const shanghai=configureTask(beijing,{...config,cities:['上海']});assert.equal(exportedRows(shanghai)[0][6],'北京');assert.equal(shanghai.id,beijing.id);assert.equal(shanghai.currentCity,'上海');
@@ -14,7 +67,7 @@ test('same-keyword historical tasks recover saved rows; other keywords stay sepa
  const other=fresh({...config,keyword:'运营'});const recovered=configureTask(other,{...config,cities:['上海']},[old]);assert.equal(exportedRows(recovered).length,1);assert.equal(recovered.config.keyword,config.keyword);
  const independent=configureTask(old,{...config,keyword:'运营'},[old]);assert.equal(exportedRows(independent).length,0);
 });
-test('configuration excludes nationwide and clamps cadence',()=>{assert.throws(()=>configuration({...config,cities:['全国']}));assert.equal(configuration({...config,interval:1}).interval,60);assert.throws(()=>configuration({...config,keyword:''}));});
+test('configuration excludes nationwide and clamps cadence',()=>{assert.throws(()=>configuration({...config,cities:['全国']}));assert.equal(configuration({...config,interval:1}).interval,10);assert.throws(()=>configuration({...config,keyword:''}));});
 test('job URLs canonicalize and other domains are rejected',()=>{assert.equal(canonical(job.url,'job'),'https://www.zhipin.com/job_detail/abc123.html');assert.throws(()=>canonical('https://evil.test/job_detail/abc123.html','job'));assert.throws(()=>canonical('https://www.zhipin.com/web/geek/jobs','company'));});
 test('same job deduplicates after checkpoint reload',()=>{let s=fresh(config);assert.equal(discover(s,[job]),1);s=JSON.parse(JSON.stringify(s));assert.equal(discover(s,[job]),0);assert.equal(stats(s).found,1);});
 test('cross-city job location cannot be saved in selected city',()=>{const s=fresh(config);discover(s,[{...job,location:'上海·浦东'}]);assert.equal(Object.values(s.jobs)[0].status,'review');});

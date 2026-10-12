@@ -1,10 +1,110 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BOSS采集工作台</title><link rel="icon" href="icons/boss32.png"><link rel="stylesheet" href="dashboard.css"></head><body>
-<header><div><span class="tag"><img src="icons/boss48.png" width="28" height="28" alt="BOSS"> BOSS 采集助手</span><h1>岗位企业采集</h1><p>选关键词和城市 → 开始采集 → 导出 Excel</p></div><span id="status" class="status">未创建任务</span></header>
-<main><section class="settings card"><h2>采集设置</h2><label>岗位关键词<input id="keyword" value="tiktok剪辑" maxlength="80" placeholder="例如：视频剪辑、跨境电商运营"></label><div class="row"><h3>采集城市</h3><button id="all" class="link">全选</button><button id="none" class="link">全取消</button></div><div id="cities" class="cities"></div><details><summary>高级设置</summary><label>采集间隔（秒）<input id="interval" type="number" value="120" min="60" max="300"></label><label>连续滚动无新增的检查次数<input id="stall" type="number" value="4" min="3" max="10"></label></details><button id="new" class="primary full">保存设置</button><p id="action-error" role="alert" class="error"></p></section>
-<section class="work"><div class="toolbar card"><div><h2 id="task-title">准备开始</h2><p id="step">保存设置后点击开始。</p></div><div class="actions"><button id="resume" class="primary">开始 / 继续</button><button id="pause">暂停</button><button id="retry">重查未完成</button><button id="history">历史任务</button></div></div><div id="history-list" class="card" hidden></div>
-<div class="metrics"><div class="card"><span>已保存岗位</span><strong id="saved">0</strong></div><div class="card"><span>去重公司</span><strong id="companies">0</strong></div><div class="card"><span>已发现岗位</span><strong id="found">0</strong></div><div class="card"><span>待核查</span><strong id="review">0</strong></div></div>
-<div class="card progress"><div class="row"><h2 id="city">当前地区：—</h2><span id="updated"></span></div><progress id="progress" max="100" value="0"></progress><p id="local">总数：加载中</p><p id="reason" class="notice"></p><div id="city-status" class="city-status"></div></div>
-<div class="card"><div class="row"><h2>采集结果</h2><select id="result-city" aria-label="查看地区"><option value="">全部地区</option></select><div class="actions"><button id="xlsx">导出 Excel</button><button id="csv">导出 CSV</button><button id="backup">备份任务 JSON</button><button id="restore">导入备份</button><input id="restore-file" type="file" accept=".json" hidden></div></div><div class="table-scroll"><table><thead><tr><th>岗位名称</th><th>公司全称</th><th>法人</th><th>注册资金</th><th>成立日期</th><th>信用代码</th><th>地区</th></tr></thead><tbody id="results"></tbody></table></div><p class="sub">显示最近50条，导出全部结果。</p></div>
-<details class="card"><summary>运行记录与待核查</summary><div id="logs" class="logs"></div></details></section></main>
-<footer>工作台可关闭，保持Chrome及采集页开启、电脑不休眠；每轮最多20次公司详情访问或30分钟，达到上限休息1小时后手动继续；这些是程序上限，不是平台安全额度。</footer>
-<script src="vendor/jszip.min.js"></script><script type="module" src="dashboard.js"></script></body></html>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BOSS 岗位采集工作台</title>
+  <link rel="icon" href="icons/boss32.png">
+  <link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+  <header class="appbar">
+    <div class="appbar-content">
+      <a class="brand" href="#" aria-label="BOSS 采集助手工作台">
+        <img src="icons/boss48.png" width="36" height="36" alt="">
+        <div><strong>BOSS 采集助手</strong><span>岗位与企业信息工作台</span></div>
+      </a>
+      <div class="appbar-meta"><span class="version">V2 · v2.0.0</span><span id="status" class="status" role="status">等待开始</span></div>
+    </div>
+  </header>
+
+  <div class="page-intro">
+    <div><p class="eyebrow">让每次采集都有明确的目标</p><h1>先设数量，再开始采集</h1><p class="intro-sub">自动整理岗位与公司资料，保存到目标数量后停止，随时导出 Excel。</p></div>
+    <ol class="flow" aria-label="使用步骤"><li class="active"><span>1</span>设置任务</li><li><span>2</span>查看进度</li><li><span>3</span>导出结果</li></ol>
+  </div>
+
+  <main class="workspace">
+    <section class="settings card" aria-labelledby="settings-title">
+      <div class="section-heading"><span class="section-number">01</span><div><h2 id="settings-title">设置采集任务</h2><p>选择你要收集的岗位</p></div></div>
+
+      <label class="field-label" for="keyword">岗位关键词</label>
+      <input id="keyword" type="text" value="tiktok剪辑" maxlength="80" placeholder="例如：视频剪辑、跨境电商运营" autocomplete="off">
+
+      <div class="field-heading"><h3>采集城市</h3><div class="text-actions"><button id="all" class="link" type="button">全选</button><span>·</span><button id="none" class="link" type="button">清空</button></div></div>
+      <div id="cities" class="cities" aria-label="选择采集城市"></div>
+
+      <div class="slider-field">
+        <label class="slider-heading" for="target"><span>保存岗位数量</span><span class="setting-value"><strong id="target-value">50</strong><span>个岗位</span></span></label>
+        <input id="target" type="range" min="0" max="100" step="1" value="50" aria-describedby="target-help">
+        <div class="range-endpoints"><span>0 个</span><span>100 个</span></div>
+        <p id="target-help" class="field-help">以本任务已保存的岗位为准，达到数量后自动停止。设为 0 时不启动。</p>
+      </div>
+
+      <div class="slider-field speed-field">
+        <label class="slider-heading" for="interval"><span>采集等待时间</span><span class="setting-value"><strong id="interval-value">60</strong><span>秒</span></span></label>
+        <input id="interval" type="range" min="10" max="100" step="1" value="60" aria-describedby="interval-help">
+        <div class="range-endpoints"><span>10 秒 · 较快</span><span>100 秒 · 较慢</span></div>
+        <p id="interval-help" class="field-help">每次访问之间等待 60–100 秒。已保存的公司资料直接复用，减少重复访问。</p>
+      </div>
+
+      <details class="advanced">
+        <summary>更多设置</summary>
+        <label class="check-label"><input id="varied" type="checkbox" checked><span>变化公司访问顺序与等待时间</span></label>
+        <p class="field-help">随机选择待处理公司，等待设置保持在 10–100 秒内；网页加载或浏览器休眠可能使执行延迟。</p>
+        <label class="field-label" for="stall">列表没有新增岗位时的确认次数</label>
+        <input id="stall" type="number" value="4" min="3" max="10">
+        <p class="field-help">多次确认后仍无新增，会停止加载并提示你检查页面。</p>
+      </details>
+
+      <button id="new" class="primary full" type="button">保存采集设置 <span aria-hidden="true">→</span></button>
+      <p id="action-error" role="alert" class="error"></p>
+      <p class="settings-note">保存设置后，点击右侧「开始采集」。</p>
+    </section>
+
+    <section class="work" aria-label="任务进度和采集结果">
+      <div class="toolbar card">
+        <div class="task-info"><div class="task-label"><span class="live-dot" aria-hidden="true"></span>当前任务</div><h2 id="task-title">准备开始</h2><p id="step" aria-live="polite">设置关键词、城市和目标数量，保存后即可开始。</p></div>
+        <div class="actions run-actions"><button id="resume" class="primary" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7 4 9 6-9 6V4Z" fill="currentColor"/></svg>开始采集</button><button id="pause" type="button">暂停</button><button id="retry" class="quiet" type="button">补查未完成</button></div>
+      </div>
+
+      <div id="run-feedback" class="feedback" role="status" aria-live="polite">保存设置并开始后，这里会显示当前进度和下一步提示。</div>
+
+      <div class="card goal-card">
+        <div class="goal-heading"><div class="section-heading"><span class="section-number">02</span><div><h2>采集进度</h2><p id="goal-summary">已保存 0 / 50 个岗位</p></div></div><span id="goal-limit" class="goal-limit">目标 50 个岗位</span></div>
+        <progress id="goal-progress" class="goal-progress" max="100" value="0" aria-label="保存岗位目标完成进度"></progress>
+        <p id="goal-hint" class="field-help">达到目标后自动停止；也可以随时暂停，之后继续。</p>
+
+        <div class="metrics">
+          <div class="metric metric-primary"><span>已保存岗位</span><strong id="saved">0</strong><small>计入目标数量</small></div>
+          <div class="metric"><span>去重公司</span><strong id="companies">0</strong><small>公司信息自动复用</small></div>
+          <div class="metric"><span>已发现岗位</span><strong id="found">0</strong><small>列表中已找到</small></div>
+          <div class="metric"><span>待核查岗位</span><strong id="review">0</strong><small>暂未完整保存</small></div>
+        </div>
+
+        <div class="city-progress">
+          <div class="row"><h3 id="city">当前地区：—</h3><span id="updated" class="updated">等待任务开始</span></div>
+          <progress id="progress" max="100" value="0" aria-label="当前城市保存进度"></progress>
+          <p id="local" class="local">选择城市后，会在这里显示各城市的采集情况。</p>
+          <p id="reason" class="notice" role="status"></p>
+          <div id="city-status" class="city-status" aria-label="各城市任务状态"></div>
+        </div>
+      </div>
+
+      <div id="history-list" class="card history-list" hidden></div>
+
+      <div class="card results-card">
+        <div class="results-heading"><div class="section-heading"><span class="section-number">03</span><div><h2>已保存结果</h2><p>保存成功的岗位与公司资料</p></div></div><div class="actions export-actions"><button id="xlsx" class="primary" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v9m-3-3 3 3 3-3M4 12v4h12v-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>导出 Excel</button><button id="csv" type="button">CSV</button></div></div>
+        <div class="result-filter"><label for="result-city">查看地区</label><select id="result-city" aria-label="查看地区"><option value="">全部地区</option></select><span class="preview-note">预览最近 50 条 · 导出包含全部结果</span></div>
+        <div class="table-scroll"><table><thead><tr><th>岗位名称</th><th>公司全称</th><th>法人</th><th>注册资金</th><th>成立日期</th><th>信用代码</th><th>地区</th></tr></thead><tbody id="results"></tbody></table><div id="results-empty" class="table-empty"><svg viewBox="0 0 48 48" aria-hidden="true"><path d="M13 8h17l6 6v25H13V8Z" fill="#e4f5f1" stroke="#70b5a9" stroke-width="1.5"/><path d="M30 8v7h6M19 23h11M19 29h11" fill="none" stroke="#70b5a9" stroke-width="1.5" stroke-linecap="round"/></svg><strong>等待第一条采集结果</strong><span>开始采集后，保存成功的岗位会出现在这里。</span></div></div>
+        <div class="results-footer"><span class="data-note"><span aria-hidden="true">✓</span> 结果自动保存在当前浏览器</span><div class="actions utility-actions"><button id="history" class="link" type="button">历史任务</button><button id="backup" class="link" type="button">备份任务</button><button id="restore" class="link" type="button">导入备份</button><input id="restore-file" type="file" accept=".json" hidden></div></div>
+      </div>
+
+      <details class="card logs-card"><summary><span>运行记录与待核查</span><span class="summary-note">需要排查时查看</span></summary><div id="logs" class="logs"></div></details>
+    </section>
+  </main>
+
+  <footer><p id="footer-help"><strong>使用提示</strong>　采集时请保持 Chrome 和采集页面打开，电脑不要休眠。连续运行 30 分钟会暂停休息，1 小时后可手动继续；出现登录、验证或访问限制时，任务会暂停并保留进度。</p><p class="footer-meta">BOSS 采集助手 · 本地工作台</p></footer>
+  <script src="vendor/jszip.min.js"></script>
+  <script type="module" src="dashboard.js"></script>
+</body>
+</html>

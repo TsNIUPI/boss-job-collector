@@ -75,8 +75,9 @@
   }
   if(m.action==='company'){
    for(let i=0;i<12;i++){
+    if(m.expectedUrl&&location.origin+location.pathname!==m.expectedUrl)throw Error('公司详情页地址发生变化，尚未保存该页信息');
     guard();const text=document.body?.innerText||'';
-    if(/企业名称[：:]|公司全称[：:]/.test(text))return P.parseCompany(text);
+    if(/企业名称[：:]|公司全称[：:]/.test(text))return {...P.parseCompany(text),sourceUrl:location.origin+location.pathname};
     await wait(500);
    }throw Error('BOSS工商全称未展示，待核查');
   }
