@@ -1,4 +1,4 @@
-import {fresh,canonical,configuration,discover,stats,commit,finishCity,restoreBackup,configureTask,waitSeconds,nextPending,companyCache,companyData,goalReached,targetPause} from './core.js';
+import {fresh,canonical,configuration,discover,stats,commit,finishCity,restoreBackup,configureTask,waitSeconds,nextPending,companyCache,companyData,goalReached,targetPause,migrateCounting,beginRound,roundCount} from './core.js';
 const ALARM='boss-collector-tick';let serial=Promise.resolve(),shortTimer;
 const exclusive=fn=>{const next=serial.then(fn);serial=next.catch(()=>{});return next;};
 const load=async()=> (await chrome.storage.local.get('task')).task;
@@ -129,7 +129,7 @@ async function step(){
   const city=s.config.cities[s.cityIndex],t=await listTab(s);s.currentCity=city;
   const cache=(await chrome.storage.local.get('companyCache')).companyCache||{};
   if(s.phase==='setup'){
-   s.scans||={};s.scans[city]={end:'',stalls:0};
+   s.scans||={};s.scans[city]={end:'',stalls:0,seen:[]};
    const u=new URL(t.url||'https://www.zhipin.com/web/geek/jobs');
    if(u.searchParams.get('query')!==s.config.keyword){u.searchParams.set('query',s.config.keyword);await chrome.tabs.update(t.id,{url:u.href});}
    await send(t.id,'city',{city,keyword:s.config.keyword});s.phase='scan';log(s,'开始采集 '+city+' / '+s.config.keyword);
@@ -229,7 +229,8 @@ async function control(m){
   const old=(await chrome.storage.local.get(m.key))[m.key];if(!old)throw Error('历史任务不存在');
   if(s)await chrome.storage.local.set({['archive_'+s.id]:s});
   const restored=structuredClone(old);restored.status='paused';restored.reason='已打开历史任务，断点保留';restored.tabId=null;restored.detailTab=null;restored.phase='setup';
-  if(restored.cityIndex>=restored.config.cities.length){restored.status=old.status;}
+  if(restored.cityIndex>=restored.config.cities.length&&old.status==='complete'){restored.status='complete';}
+  migrateCounting(restored);
   restored.config=configuration(restored.config);targetPause(restored);
   await migrateCache(restored);await save(restored);return {task:restored};
  }
@@ -252,19 +253,23 @@ async function control(m){
  }
  if(m.action==='resume'){
   s.config=configuration(s.config);
-  if(await stopAtTarget(s))return {task:s};
+  migrateCounting(s);
+  if(s.status==='running')return {task:s};
+  if(s.config.target===0){await stopAtTarget(s);return {task:s};}
+  const restart=m.newRound===true||!s.round?.id;
+  if(!restart&&await stopAtTarget(s))return {task:s};
   const restriction=(await chrome.storage.local.get('platformRestriction')).platformRestriction;
   if(restriction){
    if(!restriction.until||Date.now()<restriction.until)throw Error(restriction.reason);
    // Expiry permits only an explicit user resume. No automatic restart.
    await chrome.storage.local.set({platformRestriction:null});
   }
-  if(s.status==='running')return {task:s};
-  if(['complete','incomplete'].includes(s.status))throw Error('本轮已结束，未完成城市请使用“重查未完成”');
+  if(['complete','incomplete'].includes(s.status)&&!restart)throw Error('本轮已结束，请点击“开始新一轮”重新检查列表，历史记录会保留。');
   await pacing();s.config=configuration(s.config);
+  if(restart)beginRound(s,['complete','incomplete'].includes(s.status));
   s.phase='setup';s.connectionRetries=0;s.scopeRetries=0;
   if(s.scans?.[s.config.cities[s.cityIndex]])s.scans[s.config.cities[s.cityIndex]].stalls=0;
-  s.status='running';s.stopReason='';s.reason='';s.startedAt||=Date.now();log(s,'从 '+s.config.cities[s.cityIndex]+' 断点继续');await save(s);await schedule(s);return {task:s};
+  s.status='running';s.stopReason='';s.reason='';s.startedAt||=Date.now();log(s,(restart?'开始新一轮，目标 '+s.config.target+' 个；':'继续本轮，已新增 '+roundCount(s)+' 个；')+'当前城市 '+s.config.cities[s.cityIndex]);await save(s);await schedule(s);return {task:s};
  }
  if(m.action==='pause'){clearTimeout(shortTimer);s.status='paused';s.stopReason='user';s.nextRunAt=null;s.reason='用户暂停，断点已保留';await chrome.alarms.clear(ALARM);await save(s);return {task:s};}
  if(m.action==='retry'){
@@ -285,6 +290,7 @@ chrome.alarms.onAlarm.addListener(a=>{if(a.name===ALARM)return exclusive(()=>tic
 chrome.action.onClicked.addListener(async()=>{const url=chrome.runtime.getURL('dashboard.html');const tabs=await chrome.tabs.query({url});if(tabs.length)await chrome.tabs.update(tabs[0].id,{active:true});else await chrome.tabs.create({url});});
 chrome.runtime.onStartup.addListener(()=>exclusive(async()=>{
  const s=await load();await chrome.alarms.clear(ALARM);
+ if(s&&migrateCounting(s)){await save(s);return;}
  if(s?.status==='running'){
   s.config=configuration(s.config);if(await stopAtTarget(s))return;
   s.phase='setup';s.tabId=null;s.detailTab=null;s.scopeRetries=0;s.connectionRetries=0;
@@ -295,6 +301,7 @@ chrome.runtime.onStartup.addListener(()=>exclusive(async()=>{
 // Worker suspension loses globals, never the persisted queue. Recreate a missing alarm.
 exclusive(async()=>{
  const s=await load();if(!s)return;
+ const migrated=migrateCounting(s);
  const all=await chrome.storage.local.get(null);let restored=0;
  for(const [name,old] of Object.entries(all)){
   if(!name.startsWith('archive_')||old?.config?.keyword!==s.config.keyword)continue;
@@ -302,6 +309,6 @@ exclusive(async()=>{
  }
  await migrateCache(s);
  s.config=configuration(s.config);if(await stopAtTarget(s))return;
- if(restored){log(s,'恢复同关键词历史记录 '+restored+' 条');await save(s);}
+ if(restored||migrated){if(restored)log(s,'恢复同关键词历史记录 '+restored+' 条（不计入本轮新增）');await save(s);}
  if(s.status==='running'&&!await chrome.alarms.get(ALARM))await schedule(s);
 });

@@ -12,11 +12,28 @@ export function configuration(raw){
  return {keyword,cities,target:Number.isFinite(target)?Math.max(0,Math.min(100,Math.round(target))):50,interval:Number.isFinite(interval)&&interval>0?Math.max(10,Math.min(100,Math.round(interval))):60,stallLimit:Math.max(3,Math.min(10,Number(raw.stallLimit)||4)),varied:raw.varied!==false};
 }
 export const savedCount=s=>Object.values(s.jobs||{}).filter(e=>e.status==='saved').length;
-export const goalReached=s=>savedCount(s)>=configuration(s.config).target;
+export const roundCount=s=>s.round?.id?Object.values(s.jobs||{}).filter(e=>e.status==='saved'&&e.roundId===s.round.id).length:0;
+export const goalReached=s=>roundCount(s)>=configuration(s.config).target;
+export function migrateCounting(s){
+ if(s.countingVersion===2)return false;
+ s.countingVersion=2;s.round=null;s.nextRunAt=null;
+ if(s.status==='running'||s.stopReason==='target'){
+  s.status='paused';s.stopReason='';s.reason='已修复历史累计计数：原有 '+savedCount(s)+' 个岗位已保留。点击开始采集，本轮从0计数。';
+ }
+ return true;
+}
+export function beginRound(s,rescan=false){
+ s.round={id:crypto.randomUUID(),startedAt:Date.now()};s.stopReason='';s.nextRunAt=null;
+ if(rescan||s.cityIndex>=s.config.cities.length){
+  for(const city of s.config.cities)delete s.cities[city];
+  s.cityIndex=0;s.scans={};
+ }
+ s.currentCity=s.config.cities[s.cityIndex];s.currentJob='';s.phase='setup';
+}
 export function targetPause(s){
  if(!goalReached(s)||s.status==='complete')return false;
  s.status='paused';s.stopReason='target';s.nextRunAt=null;
- s.reason=configuration(s.config).target===0?'目标设为0个，当前不会启动采集。请选择1–100个岗位后开始，已有记录会保留。':'已达到岗位目标：累计保存 '+savedCount(s)+' / '+configuration(s.config).target+' 个岗位。可以导出结果；提高目标并保存设置后可继续。';return true;
+ s.reason=configuration(s.config).target===0?'本轮目标设为0个，不会启动采集。请选择1–100个岗位后开始，历史记录保留。':'本轮已新增保存 '+roundCount(s)+' 个岗位，达到本轮目标 '+configuration(s.config).target+' 个。历史累计 '+savedCount(s)+' 个，可导出结果或开始新一轮。';return true;
 }
 export function waitSeconds(config,random=Math.random){
  const base=Math.max(10,Math.min(100,Math.round(Number(config.interval)||60)));
@@ -57,11 +74,13 @@ export function companyCache(tasks,existing={}){
  }
  return result;
 }
-export function fresh(config){return {version:1,id:crypto.randomUUID(),config:configuration(config),status:'paused',cityIndex:0,phase:'setup',jobs:{},companies:{},cities:{},tabId:null,detailTab:null,stalls:0,logs:[],startedAt:null,updatedAt:Date.now(),reason:''};}
+export function fresh(config){return {version:1,countingVersion:2,round:null,id:crypto.randomUUID(),config:configuration(config),status:'paused',cityIndex:0,phase:'setup',jobs:{},companies:{},cities:{},tabId:null,detailTab:null,stalls:0,logs:[],startedAt:null,updatedAt:Date.now(),reason:''};}
 export function discover(s,jobs){
  const city=s.config.cities[s.cityIndex];let added=0;
+ s.scans||={};const scan=s.scans[city]||={end:'',stalls:0,seen:[]};const seen=new Set(scan.seen||[]);
  for(const job of jobs){let url;try{url=canonical(job.url,'job')}catch{continue}
   const key=city+'|'+url;
+  seen.add(key);
   if(s.jobs[key]){
    const old=s.jobs[key];
    // Preserve saved rows; refresh pending/review metadata only from a verified local card.
@@ -75,12 +94,12 @@ export function discover(s,jobs){
   const entry={job:{...job,url,city},status:'pending',attempts:0,reason:''};
   if(!job.title||!new RegExp('^'+city+'(?:市)?(?:[·\\s]|$)').test(job.location||'')){entry.status='review';entry.reason='岗位名称或实际工作城市未唯一确认';}
   s.jobs[key]=entry;added++;
- }return added;
+ }scan.seen=[...seen];return added;
 }
 export function stats(s){
  const jobs=Object.values(s.jobs),saved=jobs.filter(j=>j.status==='saved'),review=jobs.filter(j=>j.status==='review');
  const city=s.config.cities[s.cityIndex]||s.currentCity||s.config.cities.at(-1)||'—',local=jobs.filter(j=>j.job.city===city);
- return {city,found:jobs.length,saved:saved.length,review:review.length,companies:new Set(saved.map(j=>meaningful(j.row[5])||j.row[1])).size,reused:saved.filter(j=>j.source==='cache').length,localFound:local.length,localSaved:local.filter(j=>j.status==='saved').length,confirmed:!!(s.cities[city]?.endConfirmed||s.scans?.[city]?.end)};
+ return {city,found:jobs.length,saved:saved.length,roundSaved:roundCount(s),localObserved:s.scans?.[city]?.seen?.length||0,review:review.length,companies:new Set(saved.map(j=>meaningful(j.row[5])||j.row[1])).size,reused:saved.filter(j=>j.source==='cache').length,localFound:local.length,localSaved:local.filter(j=>j.status==='saved').length,confirmed:!!(s.cities[city]?.endConfirmed||s.scans?.[city]?.end)};
 }
 export function finishCity(s,endConfirmed,reason=''){
  const city=s.config.cities[s.cityIndex];const jobs=Object.values(s.jobs).filter(j=>j.job.city===city);
@@ -94,12 +113,17 @@ export function commit(s,key,boss,source='page'){
  const e=s.jobs[key];
  if(!e?.job.title||!new RegExp('^'+e.job.city+'(?:市)?(?:[·\\s]|$)').test(e.job.location||''))throw Error('岗位名称或实际工作城市未唯一确认');
  if(e.status==='saved'||goalReached(s))return false;
+ if(!s.round?.id)beginRound(s);
  e.row=[e.job.title,boss.name,boss.legal||'未展示',boss.capital||'未展示',boss.date||'未展示',boss.credit||'未展示',e.job.city];e.status='saved';e.reason='';e.source=source;
+ e.roundId=s.round.id;e.savedAt=Date.now();
  return true;
 }
 export function exportedRows(s){return Object.values(s.jobs).filter(j=>j.status==='saved').map(j=>j.row);}
 export function configureTask(previous,raw,archives=[]){
  const config=configuration(raw),s=previous?.config.keyword===config.keyword?structuredClone(previous):fresh(config);
+ migrateCounting(s);
+ const scopeChanged=JSON.stringify(s.config.cities)!==JSON.stringify(config.cities);
+ const resetRound=scopeChanged||(config.target<roundCount(s));
  s.config=config;
  for(const old of archives.filter(t=>t?.config?.keyword===config.keyword)){
   for(const [key,e] of Object.entries(old.jobs||{})){
@@ -112,6 +136,7 @@ export function configureTask(previous,raw,archives=[]){
  if(s.cityIndex<0){s.cityIndex=config.cities.length;s.status='complete';s.reason='所选城市已完成，已有记录保留';}
  else{s.status='paused';s.reason='设置已保存，已有记录保留';}
  s.stopReason='';s.nextRunAt=null;s.currentCity=config.cities[s.cityIndex]||config.cities.at(-1);s.currentJob='';s.phase='setup';s.scans||={};
+ if(resetRound)s.round=null;
  if(s.scans[s.currentCity])s.scans[s.currentCity].stalls=0;
  targetPause(s);
  return s;
@@ -123,7 +148,7 @@ export function restoreBackup(raw){
   const url=canonical(e.job?.url,'job');if(!CITIES.includes(e.job?.city)||key!==e.job.city+'|'+url)throw Error('备份岗位来源或地区无效');
   if(!['pending','saved','review'].includes(e.status))throw Error('备份状态无效');
   if(e.status==='saved'&&(!Array.isArray(e.row)||e.row.length!==7||e.row.some(v=>typeof v!=='string')||e.row[6]!==e.job.city))throw Error('备份结果列或地区无效');
-  s.jobs[key]={job:{title:String(e.job.title||''),url,company_url:String(e.job.company_url||''),city:e.job.city,location:String(e.job.location||'')},status:e.status,row:e.row,reason:String(e.reason||''),attempts:0,source:e.source==='cache'?'cache':'page'};
+  s.jobs[key]={job:{title:String(e.job.title||''),url,company_url:String(e.job.company_url||''),city:e.job.city,location:String(e.job.location||'')},status:e.status,row:e.row,reason:String(e.reason||''),attempts:0,source:e.source==='cache'?'cache':'page',roundId:typeof e.roundId==='string'?e.roundId:undefined,savedAt:Number.isFinite(e.savedAt)?e.savedAt:undefined};
  }
  s.companies=companyCache([s,{companies:raw.companies}]);s.cities={};
  for(const city of s.config.cities){
@@ -131,5 +156,6 @@ export function restoreBackup(raw){
  }
  s.cityIndex=s.config.cities.findIndex(city=>!s.cities[city]?.complete);
  if(s.cityIndex<0){s.cityIndex=s.config.cities.length;s.status='complete';}
- s.currentCity=s.config.cities[s.cityIndex]||s.config.cities.at(-1);s.phase='setup';s.reason='备份已恢复，已保存公司信息与完成城市保留';targetPause(s);return s;
+ if(raw.countingVersion===2&&typeof raw.round?.id==='string'&&Number.isFinite(raw.round.startedAt))s.round={id:raw.round.id,startedAt:raw.round.startedAt};
+ s.currentCity=s.config.cities[s.cityIndex]||s.config.cities.at(-1);s.phase='setup';s.reason='备份已恢复，历史记录与公司缓存保留；本轮计数与累计数量分别显示。';targetPause(s);return s;
 }
