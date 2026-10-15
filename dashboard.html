@@ -14,7 +14,7 @@
         <img src="icons/boss48.png" width="36" height="36" alt="">
         <div><strong>BOSS 采集助手</strong><span>岗位与企业信息工作台</span></div>
       </a>
-      <div class="appbar-meta"><span class="version">V2 · v2.0.1</span><span id="status" class="status" role="status">等待开始</span></div>
+      <div class="appbar-meta"><nav class="workspace-nav" aria-label="工作台快捷入口"><button id="open-results" type="button">已保存结果</button><button id="open-history" type="button">历史记录</button></nav><span class="version">V2 · v2.0.2</span><span id="status" class="status" role="status">等待开始</span></div>
     </div>
   </header>
 
@@ -69,6 +69,11 @@
 
       <div id="run-feedback" class="feedback" role="status" aria-live="polite">保存设置并开始后，这里会显示当前进度和下一步提示。</div>
 
+      <div id="wait-panel" class="card wait-panel" data-state="paused" aria-label="当前运行状态">
+        <div class="wait-copy"><span id="wait-title" class="wait-title">等待开始</span><strong id="wait-countdown" class="wait-countdown" aria-live="off">—</strong><p id="wait-detail">保存设置并开始采集后，会在这里显示下一步和剩余等待时间。</p></div>
+        <button id="diagnostics" class="quiet" type="button">复制诊断信息</button>
+      </div>
+
       <div class="card goal-card">
         <div class="goal-heading"><div class="section-heading"><span class="section-number">02</span><div><h2>本轮采集进度</h2><p id="goal-summary">本轮新增保存 0 个岗位</p></div></div><span id="goal-limit" class="goal-limit">本轮目标 50 个（设置值）</span></div>
         <progress id="goal-progress" class="goal-progress" max="100" value="0" aria-label="保存岗位目标完成进度"></progress>
@@ -90,20 +95,25 @@
         </div>
       </div>
 
-      <div id="history-list" class="card history-list" hidden></div>
-
-      <div class="card results-card">
+      <div id="saved-results" class="card results-card" tabindex="-1">
         <div class="results-heading"><div class="section-heading"><span class="section-number">03</span><div><h2>已保存结果</h2><p>保存成功的岗位与公司资料</p></div></div><div class="actions export-actions"><button id="xlsx" class="primary" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v9m-3-3 3 3 3-3M4 12v4h12v-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>导出 Excel</button><button id="csv" type="button">CSV</button></div></div>
-        <div class="result-filter"><label for="result-city">查看地区</label><select id="result-city" aria-label="查看地区"><option value="">全部地区</option></select><span class="preview-note">预览最近 50 条 · 导出包含全部结果</span></div>
-        <div class="table-scroll"><table><thead><tr><th>岗位名称</th><th>公司全称</th><th>法人</th><th>注册资金</th><th>成立日期</th><th>信用代码</th><th>地区</th></tr></thead><tbody id="results"></tbody></table><div id="results-empty" class="table-empty"><svg viewBox="0 0 48 48" aria-hidden="true"><path d="M13 8h17l6 6v25H13V8Z" fill="#e4f5f1" stroke="#70b5a9" stroke-width="1.5"/><path d="M30 8v7h6M19 23h11M19 29h11" fill="none" stroke="#70b5a9" stroke-width="1.5" stroke-linecap="round"/></svg><strong>等待第一条采集结果</strong><span>开始采集后，保存成功的岗位会出现在这里。</span></div></div>
-        <div class="results-footer"><span class="data-note"><span aria-hidden="true">✓</span> 结果自动保存在当前浏览器</span><div class="actions utility-actions"><button id="history" class="link" type="button">历史任务</button><button id="backup" class="link" type="button">备份任务</button><button id="restore" class="link" type="button">导入备份</button><input id="restore-file" type="file" accept=".json" hidden></div></div>
+        <div id="results-browser" class="results-browser">
+          <div class="result-control"><label for="result-task">查看范围</label><select id="result-task"><option value="current">当前任务</option></select></div>
+          <div class="result-control result-search"><label for="result-search">搜索结果</label><input id="result-search" type="search" placeholder="搜索岗位或公司名称" autocomplete="off"></div>
+          <div class="result-control"><label for="result-city">查看地区</label><select id="result-city" aria-label="查看地区"><option value="">全部地区</option></select></div>
+        </div>
+        <div class="result-summary-row"><p id="result-summary">查看已保存的岗位，或选择历史记录。</p><button id="result-resume-task" type="button" hidden>继续采集这个任务</button></div>
+        <div id="history-list" class="history-list" hidden></div>
+        <div class="table-scroll"><table><thead><tr><th>岗位名称</th><th>公司全称</th><th>法人</th><th>注册资金</th><th>成立日期</th><th>信用代码</th><th>地区</th></tr></thead><tbody id="results"></tbody></table><div id="results-empty" class="table-empty"><svg viewBox="0 0 48 48" aria-hidden="true"><path d="M13 8h17l6 6v25H13V8Z" fill="#e4f5f1" stroke="#70b5a9" stroke-width="1.5"/><path d="M30 8v7h6M19 23h11M19 29h11" fill="none" stroke="#70b5a9" stroke-width="1.5" stroke-linecap="round"/></svg><strong>此范围暂无已保存结果</strong><span>试试切换查看范围或清空搜索。</span></div></div>
+        <div class="results-pagination" aria-label="结果分页"><span class="preview-note">每页 50 条 · 导出当前查看范围</span><div class="pagination-controls"><button id="result-prev" type="button" disabled>上一页</button><span id="result-page">第 1 / 1 页</span><button id="result-next" type="button" disabled>下一页</button></div></div>
+        <div class="results-footer"><span class="data-note"><span aria-hidden="true">✓</span> 结果自动保存在当前浏览器</span><div class="actions utility-actions"><button id="history" class="link" type="button">浏览历史记录</button><button id="backup" class="link" type="button">备份当前采集任务</button><button id="restore" class="link" type="button">导入备份</button><input id="restore-file" type="file" accept=".json" hidden></div></div>
       </div>
 
       <details class="card logs-card"><summary><span>运行记录与待核查</span><span class="summary-note">需要排查时查看</span></summary><div id="logs" class="logs"></div></details>
     </section>
   </main>
 
-  <footer><p id="footer-help"><strong>使用提示</strong>　采集时请保持 Chrome 和采集页面打开，电脑不要休眠。连续运行 30 分钟会暂停休息，1 小时后可手动继续；出现登录、验证或访问限制时，任务会暂停并保留进度。</p><p class="footer-meta">BOSS 采集助手 · 本地工作台</p></footer>
+  <footer><p id="footer-help"><strong>使用提示</strong>　采集时请保持 Chrome 和采集页面打开，电脑不要休眠。累计运行 30 分钟会暂停休息，1 小时后可手动继续；主动暂停与关闭浏览器的时间不计入运行时长。出现登录、验证或访问限制时会暂停并说明原因。</p><p class="footer-meta">BOSS 采集助手 · 本地工作台</p></footer>
   <script src="vendor/jszip.min.js"></script>
   <script type="module" src="dashboard.js"></script>
 </body>

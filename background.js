@@ -1,8 +1,11 @@
 import {fresh,canonical,configuration,discover,stats,commit,finishCity,restoreBackup,configureTask,waitSeconds,nextPending,companyCache,companyData,goalReached,targetPause,migrateCounting,beginRound,roundCount} from './core.js';
-const ALARM='boss-collector-tick';let serial=Promise.resolve(),shortTimer;
+const ALARM='boss-collector-tick';let serial=Promise.resolve(),shortTimer,browserStarting=false;
 const exclusive=fn=>{const next=serial.then(fn);serial=next.catch(()=>{});return next;};
 const load=async()=> (await chrome.storage.local.get('task')).task;
-async function save(s){s.updatedAt=Date.now();await chrome.storage.local.set({task:s});const v=stats(s);await chrome.action.setBadgeText({text:s.status==='running'?String(v.saved):s.status==='complete'?'✓':s.status==='paused'?'停':'!'});await chrome.action.setBadgeBackgroundColor({color:s.status==='running'?'#187c72':'#a66416'});}
+async function save(s){
+ if(s.status!=='running'){clearTimeout(shortTimer);s.nextRunAt=null;s.waiting=false;await freezePacing();}
+ s.updatedAt=Date.now();await chrome.storage.local.set({task:s});const v=stats(s);await chrome.action.setBadgeText({text:s.status==='running'?String(v.roundSaved):s.status==='complete'?'✓':s.status==='paused'?'停':'!'});await chrome.action.setBadgeBackgroundColor({color:s.status==='running'?'#187c72':'#a66416'});
+}
 function log(s,text){s.logs.push({at:Date.now(),text});s.logs=s.logs.slice(-150);}
 async function migrateCache(s){
  const all=await chrome.storage.local.get(null);
@@ -31,21 +34,37 @@ async function tickDue(taskId,due){
  if(!current||current.status!=='running'||taskId&&current.id!==taskId||due&&current.nextRunAt!==due||current.nextRunAt>Date.now())return;
  return step();
 }
+async function armDue(s){
+ clearTimeout(shortTimer);const now=Date.now(),remaining=s.nextRunAt-now,id=s.id,due=s.nextRunAt;
+ // Recreating a wakeup must never move the persisted due time forward.
+ await chrome.alarms.create(ALARM,{when:Math.max(due,now+30000)});
+ if(remaining<30000){shortTimer=setTimeout(()=>exclusive(()=>tickDue(id,due)).catch(()=>{}),Math.max(0,remaining));shortTimer?.unref?.();}
+}
 async function schedule(s){if(s.status==='running'){
- const delay=waitSeconds(s.config);s.nextRunAt=Date.now()+delay*1000;
- clearTimeout(shortTimer);await save(s);
- // The durable alarm handles suspension; short in-worker waits support 10–29 seconds.
- await chrome.alarms.create(ALARM,{when:Math.max(s.nextRunAt,Date.now()+30000)});
- if(delay<30){
-  const id=s.id,due=s.nextRunAt;shortTimer=setTimeout(()=>exclusive(()=>tickDue(id,due)).catch(()=>{}),delay*1000);
-  shortTimer?.unref?.();
- }
+ const delay=waitSeconds(s.config);s.nextRunAt=Date.now()+delay*1000;s.waiting=true;s.waitSeconds=delay;
+ await save(s);await armDue(s);
 }}
-async function pacing(){
+async function repairWakeup(s){
+ if(s.status!=='running')return;
+ if(Number.isFinite(s.nextRunAt)&&s.nextRunAt<=Date.now())return tickDue(s.id,s.nextRunAt);
+ if(!Number.isFinite(s.nextRunAt))return schedule(s);
+ if(!await chrome.alarms.get(ALARM))return armDue(s);
+}
+async function freezePacing(cutoff=Date.now()){
+ const p=(await chrome.storage.local.get('pacingSession')).pacingSession;
+ if(p?.version===2&&Number.isFinite(p.runningSince)){
+  p.elapsedMs=(p.elapsedMs||0)+Math.max(0,cutoff-p.runningSince);p.runningSince=null;await chrome.storage.local.set({pacingSession:p});
+ }
+}
+async function pacing(start=true){
  let p=(await chrome.storage.local.get('pacingSession')).pacingSession;const now=Date.now();
- if(!p||p.restUntil&&now>=p.restUntil){p={startedAt:now,companies:0,restUntil:0};await chrome.storage.local.set({pacingSession:p});}
+ if(!p||p.restUntil&&now>=p.restUntil)p={version:2,startedAt:now,companies:0,elapsedMs:0,runningSince:null,restUntil:0};
+ if(p.version!==2)p={...p,version:2,elapsedMs:0,runningSince:null,startedAt:now};
  if(p.restUntil&&now<p.restUntil)throw Error('采集休息中，'+new Date(p.restUntil).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})+'后可手动继续，断点已保留');
- if(now-p.startedAt>=30*60*1000){p.restUntil=now+60*60*1000;await chrome.storage.local.set({pacingSession:p});throw Error('本轮已运行30分钟，休息至 '+new Date(p.restUntil).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})+'，之后手动继续');}
+ const elapsed=(p.elapsedMs||0)+(Number.isFinite(p.runningSince)?Math.max(0,now-p.runningSince):0);
+ if(elapsed>=30*60*1000){p.elapsedMs=elapsed;p.runningSince=null;p.restUntil=now+60*60*1000;await chrome.storage.local.set({pacingSession:p});throw Error('累计运行已达30分钟，休息至 '+new Date(p.restUntil).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})+'，之后手动继续；暂停时间不计入运行时长');}
+ if(start&&!Number.isFinite(p.runningSince))p.runningSince=now;
+ await chrome.storage.local.set({pacingSession:p});
  return p;
 }
 async function pageMessage(id,message,timeout=18000){
@@ -123,6 +142,7 @@ async function step(){
  const restriction=(await chrome.storage.local.get('platformRestriction')).platformRestriction;
  if(restriction){s.status='paused';s.reason=restriction.reason;await save(s);await chrome.alarms.clear(ALARM);return;}
  const stepStarted=Date.now();let successfulWork=false;
+ s.waiting=false;s.nextRunAt=null;s.lastStepAt=stepStarted;
  try{
   s.config=configuration(s.config);if(await stopAtTarget(s))return;await pacing();
   if(s.cityIndex>=s.config.cities.length)throw Error('城市队列已经结束');
@@ -135,12 +155,19 @@ async function step(){
    await send(t.id,'city',{city,keyword:s.config.keyword});s.phase='scan';log(s,'开始采集 '+city+' / '+s.config.keyword);
   }else{
    // Read list scope on every step before processing the persisted queue.
-   const data=await send(t.id,'list',{city,keyword:s.config.keyword});if(!data.cards.length&&!data.end)throw Error('当前列表为空，且未确认末尾；请检查页面');
+   const data=await send(t.id,'list',{city,keyword:s.config.keyword});
+   if(!data.cards.length&&!data.end){
+    s.emptyListRetries=(s.emptyListRetries||0)+1;
+    if(s.emptyListRetries<=3){s.reason='列表暂未显示岗位，保留断点等待重新读取（'+s.emptyListRetries+'/3）';log(s,s.reason);await schedule(s);return;}
+    throw Error('连续3次等待后列表仍为空，尚未确认末尾。断点已保留，请检查BOSS采集页后继续。');
+   }
+   s.emptyListRetries=0;
    successfulWork=true;
-   discover(s,data.cards);
+   const listedAdded=discover(s,data.cards);
    // Load one batch before collecting a company, instead of waiting for all 15
    // initial jobs. Persist first: a virtual list can replace its visible cards.
    s.scans||={};let scan=s.scans[city]||={end:'',stalls:0};
+   if(listedAdded)scan.stalls=0;
    if(data.end)scan.end=data.end;
    if(!scan.end&&scan.stalls<s.config.stallLimit){
     s.phase='loading';s.currentJob='';await save(s);
@@ -218,15 +245,38 @@ async function step(){
 }
 async function control(m){
  let s=await load();
- if(m.action==='state')return {task:s||null};
+ if(m.action==='state'){
+  if(s?.status==='running'){await repairWakeup(s);s=await load();}
+  return {task:s||null};
+ }
  if(m.action==='archives'){
   const all=await chrome.storage.local.get(null);
   return {archives:Object.entries(all).filter(([k])=>k.startsWith('archive_')).map(([key,t])=>({key,keyword:t.config.keyword,cities:t.config.cities.length,saved:Object.values(t.jobs).filter(e=>e.status==='saved').length,updatedAt:t.updatedAt}))};
+ }
+ if(m.action==='resultsCatalog'||m.action==='results'){
+  const all=await chrome.storage.local.get(null),byId=new Map();
+  if(s)byId.set(s.id,{key:'current',task:s,current:true});
+  for(const [key,value] of Object.entries(all)){
+   if(!key.startsWith('archive_')||!value?.id||!value?.config?.keyword||!value.jobs||byId.has(value.id))continue;
+   byId.set(value.id,{key,task:value,current:false});
+  }
+  const entries=[...byId.values()].sort((a,b)=>Number(b.current)-Number(a.current)||(b.task.updatedAt||0)-(a.task.updatedAt||0));
+  const catalog=entries.map(({key,task,current})=>({key,id:task.id,keyword:task.config.keyword,saved:Object.values(task.jobs).filter(e=>e.status==='saved').length,updatedAt:task.updatedAt,current}));
+  if(m.action==='resultsCatalog')return {catalog};
+  if(m.key==='all'){
+   const jobs={};
+   for(const {task} of entries)for(const [key,value] of Object.entries(task.jobs))if(value.status==='saved'&&!jobs[key])jobs[key]=structuredClone(value);
+   return {resultTask:{id:'all-results',config:{keyword:'全部已保存结果'},jobs,updatedAt:Math.max(0,...entries.map(e=>e.task.updatedAt||0))},catalog};
+  }
+  const entry=entries.find(e=>e.key===(m.key||'current'));
+  if(!entry)throw Error('没有找到该任务的已保存结果，请刷新历史列表后重试');
+  return {resultTask:entry.task,catalog};
  }
  if(m.action==='openArchive'){
   if(s?.status==='running')throw Error('请先暂停，再切换历史任务');
   if(!String(m.key).startsWith('archive_'))throw Error('历史任务键不正确');
   const old=(await chrome.storage.local.get(m.key))[m.key];if(!old)throw Error('历史任务不存在');
+  if(old.id===s?.id)return {task:s};
   if(s)await chrome.storage.local.set({['archive_'+s.id]:s});
   const restored=structuredClone(old);restored.status='paused';restored.reason='已打开历史任务，断点保留';restored.tabId=null;restored.detailTab=null;restored.phase='setup';
   if(restored.cityIndex>=restored.config.cities.length&&old.status==='complete'){restored.status='complete';}
@@ -267,7 +317,7 @@ async function control(m){
   if(['complete','incomplete'].includes(s.status)&&!restart)throw Error('本轮已结束，请点击“开始新一轮”重新检查列表，历史记录会保留。');
   await pacing();s.config=configuration(s.config);
   if(restart)beginRound(s,['complete','incomplete'].includes(s.status));
-  s.phase='setup';s.connectionRetries=0;s.scopeRetries=0;
+  s.phase='setup';s.connectionRetries=0;s.scopeRetries=0;s.emptyListRetries=0;
   if(s.scans?.[s.config.cities[s.cityIndex]])s.scans[s.config.cities[s.cityIndex]].stalls=0;
   s.status='running';s.stopReason='';s.reason='';s.startedAt||=Date.now();log(s,(restart?'开始新一轮，目标 '+s.config.target+' 个；':'继续本轮，已新增 '+roundCount(s)+' 个；')+'当前城市 '+s.config.cities[s.cityIndex]);await save(s);await schedule(s);return {task:s};
  }
@@ -275,7 +325,7 @@ async function control(m){
  if(m.action==='retry'){
   if(s.status==='running')throw Error('请先暂停再重查');
   const incomplete=s.config.cities.filter(c=>!s.cities[c]?.complete);if(!incomplete.length)throw Error('所有城市均已完成，无待核查记录');
-  s.cityIndex=s.config.cities.indexOf(incomplete[0]);s.currentCity=incomplete[0];s.currentJob='';s.phase='setup';s.stalls=0;s.lastSignature='';s.scans={};
+  s.cityIndex=s.config.cities.indexOf(incomplete[0]);s.currentCity=incomplete[0];s.currentJob='';s.phase='setup';s.stalls=0;s.lastSignature='';s.scans={};s.emptyListRetries=0;
   for(const e of Object.values(s.jobs))if(e.status==='review'&&e.job.title&&new RegExp('^'+e.job.city+'(?:市)?(?:[·\\s]|$)').test(e.job.location||'')){e.status='pending';e.reason='';}
   s.status='paused';s.reason='已准备重新核查未完成城市，点击继续开始';await save(s);return {task:s};
  }
@@ -288,16 +338,17 @@ chrome.runtime.onMessage.addListener((m,sender,reply)=>{
 });
 chrome.alarms.onAlarm.addListener(a=>{if(a.name===ALARM)return exclusive(()=>tickDue());});
 chrome.action.onClicked.addListener(async()=>{const url=chrome.runtime.getURL('dashboard.html');const tabs=await chrome.tabs.query({url});if(tabs.length)await chrome.tabs.update(tabs[0].id,{active:true});else await chrome.tabs.create({url});});
-chrome.runtime.onStartup.addListener(()=>exclusive(async()=>{
+chrome.runtime.onStartup.addListener(()=>{browserStarting=true;return exclusive(async()=>{
  const s=await load();await chrome.alarms.clear(ALARM);
+ if(s)await freezePacing(s.updatedAt||Date.now());
  if(s&&migrateCounting(s)){await save(s);return;}
  if(s?.status==='running'){
   s.config=configuration(s.config);if(await stopAtTarget(s))return;
   s.phase='setup';s.tabId=null;s.detailTab=null;s.scopeRetries=0;s.connectionRetries=0;
   if(s.scans?.[s.config.cities[s.cityIndex]])s.scans[s.config.cities[s.cityIndex]].stalls=0;
-  s.reason='正在恢复 '+s.config.cities[s.cityIndex]+' 断点';log(s,s.reason);await save(s);await schedule(s);
+  s.reason='正在恢复 '+s.config.cities[s.cityIndex]+' 断点';log(s,s.reason);await save(s);await repairWakeup(s);
  }
-}));
+}).finally(()=>{browserStarting=false;});});
 // Worker suspension loses globals, never the persisted queue. Recreate a missing alarm.
 exclusive(async()=>{
  const s=await load();if(!s)return;
@@ -310,5 +361,5 @@ exclusive(async()=>{
  await migrateCache(s);
  s.config=configuration(s.config);if(await stopAtTarget(s))return;
  if(restored||migrated){if(restored)log(s,'恢复同关键词历史记录 '+restored+' 条（不计入本轮新增）');await save(s);}
- if(s.status==='running'&&!await chrome.alarms.get(ALARM))await schedule(s);
+ if(s.status==='running'&&!browserStarting)await repairWakeup(s);
 });

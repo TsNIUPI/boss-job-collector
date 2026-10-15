@@ -24,6 +24,27 @@ const jobs=(start,end)=>Array.from({length:end-start+1},(_,i)=>({title:'剪辑'+
 function history(s,start,end,city='北京'){
  for(const raw of jobs(start,end)){const job={...raw,city,location:city+'·示例区'};s.jobs[city+'|'+job.url]={job,status:'saved',row:[job.title,'历史公司','历史法人','未展示','未展示','未展示',city]};}
 }
+test('a transient empty list keeps the saved checkpoint and later continues from three to thirty',async()=>{
+ let visible=3,empty=false;const h=await harness(false,async()=>({cards:empty?[]:jobs(1,visible),end:'',changed:false}));await h.control({action:'new',config:{keyword:'剪辑',cities:['北京'],target:30}});await h.control({action:'resume'});await h.tick();await h.tick();assert.equal(roundCount(h.stored.task),3);
+ empty=true;await h.tick();assert.equal(h.stored.task.status,'running');assert.equal(roundCount(h.stored.task),3);assert.equal(h.stored.task.emptyListRetries,1);assert.ok(h.stored.task.nextRunAt>Date.now());
+ empty=false;visible=30;await h.tick();assert.equal(roundCount(h.stored.task),30);assert.equal(h.stored.task.stopReason,'target');assert.equal(h.stored.task.emptyListRetries,0);
+});
+test('persistent empty lists stop with an explicit reason and never claim the city complete',async()=>{
+ const h=await harness(false,async()=>({cards:[],end:''}));await h.control({action:'new',config:{keyword:'剪辑',cities:['北京'],target:30}});await h.control({action:'resume'});await h.tick();for(let i=0;i<3;i++){await h.tick();assert.equal(h.stored.task.status,'running');}await h.tick();assert.equal(h.stored.task.status,'paused');assert.match(h.stored.task.reason,/列表仍为空/);assert.ok(!h.stored.task.cities['北京']?.complete);
+});
+test('saved results include the current task and all histories without stale same-id snapshots',async()=>{
+ const h=await harness();await h.control({action:'new',config:{keyword:'剪辑',cities:['北京']}});history(h.stored.task,1,53);
+ const stale=structuredClone(h.stored.task);stale.jobs={};history(stale,1,1);h.stored['archive_'+stale.id]=stale;
+ const other=structuredClone(stale);other.id='different-keyword';other.config.keyword='运营';other.jobs={};history(other,101,105);h.stored.archive_other=other;
+ const catalog=await h.control({action:'resultsCatalog'});assert.equal(catalog.catalog.length,2);assert.equal(catalog.catalog[0].saved,53);assert.equal(catalog.catalog[0].current,true);
+ const all=await h.control({action:'results',key:'all'});assert.equal(savedCount(all.resultTask),58);
+ const before=structuredClone(h.stored.task);const single=await h.control({action:'results',key:'archive_other'});assert.equal(savedCount(single.resultTask),5);assert.deepEqual(h.stored.task,before);
+ const opened=await h.control({action:'openArchive',key:'archive_'+stale.id});assert.equal(savedCount(opened.task),53);assert.equal(savedCount(h.stored.task),53);
+});
+test('history browsing and export retrieval never interrupt a running task or change its round',async()=>{
+ const h=await harness();await h.control({action:'new',config:{keyword:'剪辑',cities:['北京']}});const other=structuredClone(h.stored.task);other.id='old-task';other.config.keyword='运营';history(other,101,105);h.stored.archive_old=other;
+ await h.control({action:'resume'});const before=structuredClone(h.stored.task);await h.control({action:'resultsCatalog'});const view=await h.control({action:'results',key:'archive_old'});assert.equal(savedCount(view.resultTask),5);assert.deepEqual(h.stored.task,before);assert.equal(h.stored.task.status,'running');
+});
 test('the reported 53 historic rows and target 40 can run and save exactly 40 new rows',async()=>{
  const h=await harness(false,async()=>({cards:jobs(1,120),end:'没有更多'}));await h.control({action:'new',config:{keyword:'剪辑',cities:['北京'],target:40}});
  history(h.stored.task,1,53);delete h.stored.task.countingVersion;h.stored.task.stopReason='target';h.stored.task.reason='旧累计53/40';
@@ -235,7 +256,50 @@ test('loading probe restriction halts immediately without page reload or recover
 test('20 company visits no longer stop a task; time-based rest still persists across task switches',async()=>{
  const h=await harness(false,async()=>({cards:jobs(1,2).map((j,i)=>({...j,company_url:'https://www.zhipin.com/gongsi/c'+i+'.html'})),end:'没有更多'}));await h.control({action:'new',config:{keyword:'剪辑',cities:['北京']}});await h.control({action:'resume'});await h.tick();
  h.stored.pacingSession.companies=20;await h.tick();assert.equal(h.stored.task.status,'running');assert.equal(h.stored.pacingSession.companies,21);
- h.stored.pacingSession.startedAt=Date.now()-31*60*1000;const before=h.requests.length;await h.tick();assert.equal(h.stored.task.status,'paused');assert.equal(h.requests.length,before);assert.ok(h.stored.pacingSession.restUntil>Date.now());
+ h.stored.pacingSession.elapsedMs=31*60*1000;const before=h.requests.length;await h.tick();assert.equal(h.stored.task.status,'paused');assert.equal(h.requests.length,before);assert.ok(h.stored.pacingSession.restUntil>Date.now());
  await h.control({action:'new',config:{keyword:'运营',cities:['上海']}});assert.equal((await h.control({action:'resume'})).ok,false);h.events.startup[0]();await settle();assert.equal(h.stored.task.status,'paused');
 });
-test('elapsed session budget pauses before navigation; rest expiry requires explicit resume',async()=>{const h=await harness();await h.control({action:'new',config:{keyword:'剪辑',cities:['北京']}});await h.control({action:'resume'});h.stored.pacingSession.startedAt=Date.now()-31*60*1000;await h.tick();assert.equal(h.stored.task.status,'paused');assert.equal(h.tabs.size,0);h.stored.pacingSession.restUntil=Date.now()-1;await h.tick();assert.equal(h.stored.task.status,'paused');assert.equal((await h.control({action:'resume'})).ok,true);assert.equal(h.stored.pacingSession.companies,0);assert.equal(h.stored.pacingSession.restUntil,0);});
+test('elapsed session budget pauses before navigation; rest expiry requires explicit resume',async()=>{const h=await harness();await h.control({action:'new',config:{keyword:'剪辑',cities:['北京']}});await h.control({action:'resume'});h.stored.pacingSession.elapsedMs=31*60*1000;await h.tick();assert.equal(h.stored.task.status,'paused');assert.equal(h.tabs.size,0);h.stored.pacingSession.restUntil=Date.now()-1;await h.tick();assert.equal(h.stored.task.status,'paused');assert.equal((await h.control({action:'resume'})).ok,true);assert.equal(h.stored.pacingSession.companies,0);assert.equal(h.stored.pacingSession.restUntil,0);});
+
+
+test('resuming or retrying an empty-list pause restores its bounded retry budget and saved rows',async()=>{
+ let empty=false,visible=3;
+ const h=await harness(false,async()=>({cards:empty?[]:jobs(1,visible),end:'',changed:false}));
+ await h.control({action:'new',config:{keyword:'剪辑',cities:['北京'],target:10}});
+ await h.control({action:'resume'});await h.tick();await h.tick();
+ assert.equal(roundCount(h.stored.task),3);
+ empty=true;for(let i=0;i<4;i++)await h.tick();
+ assert.equal(h.stored.task.status,'paused');assert.equal(h.stored.task.emptyListRetries,4);
+ assert.equal((await h.control({action:'resume'})).ok,true);
+ assert.equal(h.stored.task.emptyListRetries,0);
+ await h.tick();await h.tick();
+ assert.equal(h.stored.task.status,'running');assert.equal(h.stored.task.emptyListRetries,1);
+ assert.equal(roundCount(h.stored.task),3);
+ for(let i=0;i<3;i++)await h.tick();assert.equal(h.stored.task.status,'paused');
+ assert.equal((await h.control({action:'retry'})).ok,true);
+ assert.equal(h.stored.task.emptyListRetries,0);
+ empty=false;visible=5;await h.control({action:'resume'});await h.tick();await h.tick();
+ assert.equal(h.stored.task.status,'running');assert.equal(roundCount(h.stored.task),5);
+ assert.equal(h.stored.task.emptyListRetries,0);
+});
+
+test('late cards in the initial list reset exhausted stalls and allow scrolling to resume',async()=>{
+ let late=false,scrolls=0;
+ const distinct=total=>jobs(1,total).map((job,index)=>({...job,company_url:'https://www.zhipin.com/gongsi/c'+index+'.html'}));
+ const h=await harness(false,async(m,stored)=>{
+  if(m.action==='scroll'){
+   scrolls++;
+   if(late){assert.equal(stored.task.scans['北京'].stalls,0);return {cards:distinct(10),end:'',changed:true};}
+   return {cards:distinct(8),end:'',changed:false};
+  }
+  return {cards:distinct(late?9:8),end:''};
+ });
+ await h.control({action:'new',config:{keyword:'剪辑',cities:['北京'],target:20,stallLimit:3,varied:false}});
+ await h.control({action:'resume'});await h.tick();for(let i=0;i<3;i++)await h.tick();
+ assert.equal(roundCount(h.stored.task),3);assert.equal(h.stored.task.scans['北京'].stalls,3);
+ assert.equal(scrolls,3);assert.equal(h.stored.task.status,'running');
+ late=true;await h.tick();
+ assert.equal(scrolls,4);assert.equal(Object.keys(h.stored.task.jobs).length,10);
+ assert.equal(h.stored.task.scans['北京'].stalls,0);
+ assert.equal(roundCount(h.stored.task),4);assert.equal(h.stored.task.status,'running');
+});

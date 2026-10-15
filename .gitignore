@@ -5,3 +5,4 @@ node_modules/
 *备份*.json
 .env*
 *.log
+test-artifacts/

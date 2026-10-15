@@ -29,8 +29,15 @@
  function scope(city,keyword){const q=new URL(location.href),actual=current(),query=q.searchParams.get('query')||'';if(q.pathname.replace(/\/$/,'')!=='/web/geek/jobs'||query!==keyword||actual!==city)throw Error('筛选需恢复：应为'+city+' / '+keyword+'，页面为'+(actual||'地区未加载')+' / '+(query||'关键词未加载'));}
  function snapshot(city){
   const cards=P.list(city),anchor=document.querySelector('.job-card-box');
-  const root=anchor?.closest('.rec-job-list,.job-list-box,.job-list-container')||anchor?.parentElement;
-  const end=root?[...root.parentElement.querySelectorAll('*')].filter(e=>P.visible(e)&&!e.children.length&&/^(没有更多(?:了|岗位)?|暂无更多(?:岗位)?|已到底|到底了)[！!。\s]*$/.test(e.innerText.trim())).map(e=>e.innerText.trim()).join('；'):'';
+  const containers=[...document.querySelectorAll('.rec-job-list,.job-list-box,.job-list-container')].filter(P.visible);
+  const outer=containers.filter(e=>!containers.some(other=>other!==e&&other.contains(e)));
+  const root=anchor?.closest('.rec-job-list,.job-list-box,.job-list-container')||anchor?.parentElement||(outer.length===1?outer[0]:null);
+  const endText=/^(没有更多(?:了|岗位)?|暂无更多(?:岗位)?|暂无(?:符合条件的)?岗位|没有找到相关岗位|已到底|到底了)[！!。\s]*$/;
+  const nodes=root?[root,...root.querySelectorAll('*')]:[];
+  // A dedicated footer may sit directly after the list, never in an unrelated aside.
+  const footer=root?.nextElementSibling;
+  if(footer&&/^(DIV|P|SPAN|FOOTER)$/.test(footer.tagName)&&footer.childElementCount<=1&&endText.test(footer.innerText.trim()))nodes.push(footer);
+  const end=nodes.filter(e=>P.visible(e)&&(!e.children.length||e===footer)&&endText.test(e.innerText.trim())).map(e=>e.innerText.trim()).join('；');
   return {cards,end,url:location.href,city:current()};
  }
  async function scrollList(city,keyword){
