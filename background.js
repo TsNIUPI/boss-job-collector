@@ -37,7 +37,9 @@ async function tickDue(taskId,due){
 async function armDue(s){
  clearTimeout(shortTimer);const now=Date.now(),remaining=s.nextRunAt-now,id=s.id,due=s.nextRunAt;
  // Recreating a wakeup must never move the persisted due time forward.
- await chrome.alarms.create(ALARM,{when:Math.max(due,now+30000)});
+ // Unpacked extensions support sub-30-second alarms. Keep the user's exact
+ // deadline; Chrome itself may still deliver late after sleep or throttling.
+ await chrome.alarms.create(ALARM,{when:due});
  if(remaining<30000){shortTimer=setTimeout(()=>exclusive(()=>tickDue(id,due)).catch(()=>{}),Math.max(0,remaining));shortTimer?.unref?.();}
 }
 async function schedule(s){if(s.status==='running'){
@@ -70,18 +72,31 @@ async function pacing(start=true){
 async function pageMessage(id,message,timeout=18000){
  let timer;try{return await Promise.race([chrome.tabs.sendMessage(id,message),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('页面脚本响应超时')),timeout);})]);}finally{clearTimeout(timer);}
 }
+function companyPageState(tab,expectedUrl){
+ const matches=value=>{try{return canonical(value,'company')===expectedUrl;}catch{return false;}};
+ // Tab.url is the last committed document. A newly created tab can still have
+ // an empty/about:blank URL while pendingUrl already identifies our company.
+ // A pending destination elsewhere must never inherit the old page's identity.
+ if(tab?.pendingUrl&&!matches(tab.pendingUrl))return 'changed';
+ if(matches(tab?.url))return 'ready';
+ if((!tab?.url||tab.url==='about:blank')&&matches(tab?.pendingUrl))return 'pending';
+ // Before Chrome exposes pendingUrl, a new owned tab can be blank. This is
+ // only permission to wait, never permission to read, close or reload it.
+ if(tab&&(!tab.url||tab.url==='about:blank')&&!tab.pendingUrl)return 'unknown';
+ return 'changed';
+}
 async function send(id,action,args={}){
- const verifyCompany=async()=>{
-  if(action!=='company'||!args.expectedUrl)return;
-  const tab=await chrome.tabs.get(id).catch(()=>null);
-  let current;try{current=canonical(tab?.url,'company');}catch{}
-  if(current!==args.expectedUrl)throw Error('公司详情页地址发生变化，尚未保存该页信息，请检查页面后继续');
+ const verifyCompany=async tab=>{
+  if(action!=='company'||!args.expectedUrl)return true;
+  const state=companyPageState(tab||await chrome.tabs.get(id).catch(()=>null),args.expectedUrl);
+  if(state==='changed')throw Error('公司详情页地址发生变化，尚未保存该页信息，请检查页面后继续');
+  return state==='ready';
  };
  const stage={city:'切换城市',list:'读取岗位列表',scroll:'加载更多岗位',company:'读取公司详情'}[action]||action;let last='页面尚未加载',refreshed=false;
  for(let n=0;n<24;n++){
   const tab=await chrome.tabs.get(id).catch(()=>null);
   if(!tab){last='采集标签页已关闭';break;}
-  await verifyCompany();
+  if(!await verifyCompany(tab)){last='公司页正在打开，等待目标地址加载';await new Promise(r=>setTimeout(r,500));continue;}
   if(tab.status==='loading'){
    // Fonts, ads or images may keep Chrome "loading" after the usable DOM is
    // ready. Probe our listener rather than waiting for unrelated resources.
@@ -89,6 +104,7 @@ async function send(id,action,args={}){
    if(probe?.ok===false&&probe.error)throw Error(probe.error);
    if(!probe?.ok||!probe.data?.ready){last='页面仍在加载';await new Promise(r=>setTimeout(r,500));continue;}
   }
+  if(action==='company'&&!await verifyCompany()){last='公司页正在重新加载';await new Promise(r=>setTimeout(r,500));continue;}
   let r;try{r=await pageMessage(id,{channel:'boss-collector',action,...args});}catch(e){
    last=String(e.message||e).replace(/https?:\/\/\S+/g,'[网页地址]').slice(0,200);
    if(last==='页面脚本响应超时')break;
@@ -102,7 +118,7 @@ async function send(id,action,args={}){
    await new Promise(r=>setTimeout(r,500));continue;
   }
   if(!r?.ok)throw Error(r?.error||'页面没有返回有效数据');
-  await verifyCompany();
+  if(!await verifyCompany()){last='公司页正在重新加载，尚未保存';await new Promise(r=>setTimeout(r,500));continue;}
   if(action==='company'&&r.data?.sourceUrl&&r.data.sourceUrl!==args.expectedUrl)throw Error('公司信息来源链接不一致，尚未保存该页信息');
   return r.data;
  }
@@ -116,7 +132,7 @@ async function recoverConnection(s,error){
  const expected=company?s.detailTab?.url:null;
  if(tab){
   const u=new URL(tab.url||'https://www.zhipin.com/');
-  const own=company?canonical(u.href,'company')===expected:u.origin==='https://www.zhipin.com'&&/^\/web\/geek\/jobs\/?$/.test(u.pathname);
+  const own=company?['ready','pending'].includes(companyPageState(tab,expected)):u.origin==='https://www.zhipin.com'&&/^\/web\/geek\/jobs\/?$/.test(u.pathname);
   if(!own)return false;
   // Replace only the failed owned page in place; preserve queue and rows.
   await chrome.tabs.update(id,{url:company?expected:u.href,active:false});
@@ -127,14 +143,15 @@ async function recoverConnection(s,error){
  log(s,s.reason+(error.detail?'；'+error.detail:''));await save(s);await schedule(s);return true;
 }
 async function listTab(s){
- if(s.tabId){const t=await chrome.tabs.get(s.tabId).catch(()=>null);if(t?.url?.startsWith('https://www.zhipin.com/web/geek/jobs'))return t;}
+ const isList=value=>{try{const u=new URL(value);return u.origin==='https://www.zhipin.com'&&/^\/web\/geek\/jobs\/?$/.test(u.pathname);}catch{return false;}};
+ if(s.tabId){const t=await chrome.tabs.get(s.tabId).catch(()=>null);if(t&&(isList(t.url)||isList(t.pendingUrl)))return t;}
  // A dedicated inactive list prevents changing the user's existing BOSS filters.
  const t=await chrome.tabs.create({url:'https://www.zhipin.com/web/geek/jobs?query='+encodeURIComponent(s.config.keyword),active:false});s.tabId=t.id;s.phase='setup';await save(s);return t;
 }
 async function closeOwned(s){
  if(!s.detailTab)return;
  const {id,url}=s.detailTab,t=await chrome.tabs.get(id).catch(()=>null);
- if(t&&canonical(t.url,'company')!==url)throw Error('临时公司页地址发生变化，已保留页面，请检查后继续');
+ if(t&&companyPageState(t,url)!=='ready')throw Error('临时公司页地址发生变化或仍在加载，已保留页面，请检查后继续');
  if(t)await chrome.tabs.remove(id);s.detailTab=null;
 }
 async function step(){

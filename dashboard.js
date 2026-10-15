@@ -12,7 +12,8 @@ function sliderLabels(){
  $('target-value').textContent=String(target);$('interval-value').textContent=String(base);
  $('target-help').textContent=target===0?'0表示不启动采集；历史记录保留。':`本轮新增保存 ${target} 个后暂停；历史记录不占本轮额度。此数是设置目标，不是网站岗位总数。`;
  const upper=Math.min(100,base*2-1);
- $('interval-help').textContent=$('varied').checked?`每轮实际等待 ${base===upper?base:base+'–'+upper} 秒，访问顺序变化。`:`每轮固定等待 ${base} 秒。`;
+ $('interval-help').textContent=$('varied').checked?`每轮完成后计划等待 ${base===upper?base:base+'–'+upper} 秒（基础 ${base} 秒）；网页加载另计。`:`每轮完成后计划等待 ${base} 秒；网页加载另计。`;
+ $('active-pace').hidden=task?.status!=='running';if(task?.status==='running'){const active=configuration(task.config),upper=Math.min(100,active.interval*2-1);$('active-pace').textContent='当前运行生效：基础 '+active.interval+' 秒，'+(active.varied!==false?'计划等待 '+active.interval+'–'+upper+' 秒':'固定等待 '+active.interval+' 秒')+'。调整滑轨后需先暂停并保存，才会应用新设置。';}
  for(const id of ['target','interval']){const input=$(id);input.style.setProperty('--range-progress',100*(input.value-input.min)/(input.max-input.min)+'%');}
  if(task&&task.status!=='running')$('resume').disabled=target===0;
 }
@@ -66,13 +67,13 @@ function waitStatus(){
  if(!task){$('wait-title').textContent='等待开始';$('wait-countdown').textContent='—';$('wait-detail').textContent='设置数量和城市，点击开始采集。历史结果可在右上角直接查看。';return;}
  if(task.status!=='running'){$('wait-title').textContent=task.status==='complete'?'已确认列表结束':task.config.target===0?'尚未启动：目标为0':task.stopReason==='target'?'本轮目标已达成':'采集已暂停';$('wait-countdown').textContent=task.status==='complete'?'已结束':'已暂停';$('wait-detail').textContent=task.reason||'断点和结果已保留，可以继续采集。';return;}
  const remaining=Math.ceil(((task.nextRunAt||0)-Date.now())/1000);
- if(task.nextRunAt&&remaining>0){panel.dataset.state='waiting';$('wait-title').textContent='正在运行 · 等待下一轮';$('wait-countdown').textContent=remaining+' 秒';$('wait-detail').textContent=(task.reason?task.reason+'；':'')+'等待结束自动继续，无需反复点击开始。预计 '+new Date(task.nextRunAt).toLocaleTimeString()+' 执行。';}
+ if(task.nextRunAt&&remaining>0){panel.dataset.state='waiting';$('wait-title').textContent='正在运行 · 等待下一轮';$('wait-countdown').textContent=remaining+' 秒';$('wait-detail').textContent=(task.reason?task.reason+'；':'')+'本轮计划等待 '+(task.waitSeconds||configuration(task.config).interval)+' 秒（基础 '+configuration(task.config).interval+' 秒）。倒计时结束自动继续，预计 '+new Date(task.nextRunAt).toLocaleTimeString()+' 执行；页面加载另计。';}
  else{$('wait-title').textContent=task.waiting?'已到时间 · 正在唤醒后台':'正在采集';$('wait-countdown').textContent=task.waiting?'准备继续':'处理中';$('wait-detail').textContent=task.phase==='collect'?'正在读取公司展示的信息，完成后自动保存并安排下一轮。':task.phase==='loading'?'正在滚动加载更多岗位，已发现的记录会保留。':'正在检查岗位列表与采集队列。';}
 }
 $('diagnostics').onclick=async()=>{try{
  const s=await getState(),v=s?stats(s):null;
- const diagnostic={version:'2.0.2',capturedAt:new Date().toISOString(),status:s?.status||'none',phase:s?.phase,reason:s?.reason,target:s?.config.target,interval:s?.config.interval,waiting:s?.waiting,nextRunAt:s?.nextRunAt?new Date(s.nextRunAt).toISOString():null,lastStepAt:s?.lastStepAt?new Date(s.lastStepAt).toISOString():null,roundSaved:v?.roundSaved,totalSaved:v?.saved,pending:s?Object.values(s.jobs).filter(e=>e.status==='pending').length:0,review:v?.review,emptyListRetries:s?.emptyListRetries||0,connectionRetries:s?.connectionRetries||0};
- await navigator.clipboard.writeText(JSON.stringify(diagnostic,null,2));$('diagnostics').textContent='已复制，可粘贴给我排查';
+ const diagnostic={version:'2.0.4',capturedAt:new Date().toISOString(),status:s?.status||'none',phase:s?.phase,reason:s?.reason,target:s?.config.target,interval:s?.config.interval,waiting:s?.waiting,nextRunAt:s?.nextRunAt?new Date(s.nextRunAt).toISOString():null,lastStepAt:s?.lastStepAt?new Date(s.lastStepAt).toISOString():null,roundSaved:v?.roundSaved,totalSaved:v?.saved,pending:s?Object.values(s.jobs).filter(e=>e.status==='pending').length:0,review:v?.review,emptyListRetries:s?.emptyListRetries||0,connectionRetries:s?.connectionRetries||0};
+ await navigator.clipboard.writeText(JSON.stringify(diagnostic,null,2));$('diagnostic-feedback').hidden=false;$('diagnostic-feedback').textContent='诊断已复制。返回聊天，按 Ctrl + V 粘贴并发送。';
 }catch(e){errors(e);}};
 function draw(s,syncSettings=false){
  if(!s)return;const changed=task?.id!==s.id||syncSettings;task=s;

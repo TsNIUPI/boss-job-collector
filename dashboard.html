@@ -14,7 +14,7 @@
         <img src="icons/boss48.png" width="36" height="36" alt="">
         <div><strong>BOSS 采集助手</strong><span>岗位与企业信息工作台</span></div>
       </a>
-      <div class="appbar-meta"><nav class="workspace-nav" aria-label="工作台快捷入口"><button id="open-results" type="button">已保存结果</button><button id="open-history" type="button">历史记录</button></nav><span class="version">V2 · v2.0.2</span><span id="status" class="status" role="status">等待开始</span></div>
+      <div class="appbar-meta"><nav class="workspace-nav" aria-label="工作台快捷入口"><button id="open-results" type="button">已保存结果</button><button id="open-history" type="button">历史记录</button></nav><span class="version">V2 · v2.0.4</span><span id="status" class="status" role="status">等待开始</span></div>
     </div>
   </header>
 
@@ -41,10 +41,11 @@
       </div>
 
       <div class="slider-field speed-field">
-        <label class="slider-heading" for="interval"><span>采集等待时间</span><span class="setting-value"><strong id="interval-value">60</strong><span>秒</span></span></label>
+        <label class="slider-heading" for="interval"><span>每轮完成后的基础等待</span><span class="setting-value"><strong id="interval-value">60</strong><span>秒</span></span></label>
         <input id="interval" type="range" min="10" max="100" step="1" value="60" aria-describedby="interval-help">
         <div class="range-endpoints"><span>10 秒 · 较快</span><span>100 秒 · 较慢</span></div>
-        <p id="interval-help" class="field-help">每次访问之间等待 60–100 秒。已保存的公司资料直接复用，减少重复访问。</p>
+        <p id="interval-help" class="field-help">每轮完成后计划等待 60–100 秒；页面加载、读取和保存另计。已保存的公司资料直接复用。</p>
+        <p id="active-pace" class="active-pace" role="status" hidden></p>
       </div>
 
       <details class="advanced">
@@ -71,7 +72,7 @@
 
       <div id="wait-panel" class="card wait-panel" data-state="paused" aria-label="当前运行状态">
         <div class="wait-copy"><span id="wait-title" class="wait-title">等待开始</span><strong id="wait-countdown" class="wait-countdown" aria-live="off">—</strong><p id="wait-detail">保存设置并开始采集后，会在这里显示下一步和剩余等待时间。</p></div>
-        <button id="diagnostics" class="quiet" type="button">复制诊断信息</button>
+        <div class="wait-actions"><button id="diagnostics" class="quiet" type="button">复制运行诊断</button><p id="diagnostic-feedback" class="diagnostic-feedback" role="status" aria-live="polite" hidden></p></div>
       </div>
 
       <div class="card goal-card">

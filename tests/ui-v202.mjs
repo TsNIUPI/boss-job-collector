@@ -41,13 +41,14 @@ try{
  browser=await chromium.launch({channel:'chrome',headless:true});
  const context=await browser.newContext({viewport:{width:1440,height:1100},acceptDownloads:true});
  const origin='http://127.0.0.1:'+server.address().port;
- await context.grantPermissions(['clipboard-read','clipboard-write'],{origin});
+ if(process.env.BOSS_TEST_MOCK_CLIPBOARD!=='1')await context.grantPermissions(['clipboard-read','clipboard-write'],{origin});
  const page=await context.newPage(),errors=[],remoteRequests=[];
  page.on('pageerror',e=>errors.push(e.message));
  await page.route('**/*',route=>{
   const url=new URL(route.request().url());if(url.origin===origin)return route.continue();remoteRequests.push(url.href);return route.abort();
  });
- await page.addInitScript(({seed,archive,stale})=>{
+ await page.addInitScript(({seed,archive,stale,mockClipboard})=>{
+  if(mockClipboard){let text='';Object.defineProperty(navigator,'clipboard',{value:{writeText:async value=>{text=String(value);},readText:async()=>text}});}
   const clone=v=>structuredClone(v),stored={task:clone(seed),archive_other:clone(archive),archive_current_stale:clone(stale)},messageListeners=[],storageListeners=[],alarmListeners=[],alarms=new Map(),tabs=new Map();let nextId=1;
   const event=list=>({addListener:f=>list.push(f)});
   globalThis.__fixtureState=()=>clone(stored.task);
@@ -65,7 +66,7 @@ try{
    alarms:{onAlarm:event(alarmListeners),create:async(name,data)=>alarms.set(name,clone({name,...data})),clear:async name=>alarms.delete(name),get:async name=>clone(alarms.get(name))},
    tabs:{create:async data=>{const tab={id:nextId++,status:'complete',...data};tabs.set(tab.id,tab);return clone(tab);},get:async id=>{if(!tabs.has(id))throw Error('Tab not found');return clone(tabs.get(id));},update:async(id,data)=>{if(!tabs.has(id))throw Error('Tab not found');Object.assign(tabs.get(id),data);return clone(tabs.get(id));},remove:async id=>tabs.delete(id),query:async()=>clone([...tabs.values()]),reload:async()=>{},sendMessage:async()=>{throw Error('This history/countdown test must not access a BOSS page');}}
   };
- },{seed,archive,stale});
+ },{seed,archive,stale,mockClipboard:process.env.BOSS_TEST_MOCK_CLIPBOARD==='1'});
  await page.goto(origin+'/dashboard.html');await page.waitForFunction(()=>globalThis.__bridgeReady);
  await page.waitForFunction(()=>document.querySelector('#result-task').options.length===3);
  const state=()=>page.evaluate(()=>__fixtureState());
@@ -95,6 +96,9 @@ try{
  const firstCountdown=parseInt(await page.locator('#wait-countdown').innerText(),10);assert.ok(firstCountdown>0&&firstCountdown<=60);
  await page.waitForTimeout(2200);const secondCountdown=parseInt(await page.locator('#wait-countdown').innerText(),10);assert.ok(secondCountdown<firstCountdown,'Countdown must decrease each second');await stable();
 
+ // A draft slider edit cannot masquerade as the live running configuration.
+ await page.locator('#interval').press('Home');for(let n=0;n<3;n++)await page.locator('#interval').press('ArrowRight');assert.equal(await page.locator('#interval').inputValue(),'13');assert.match(await page.locator('#active-pace').innerText(),/当前运行生效：基础 60 秒/);assert.equal((await state()).config.interval,60);assert.match(await page.locator('#wait-detail').innerText(),/本轮计划等待 60 秒（基础 60 秒）/);
+
  // History browsing is read-only even while collection is running; all = 53 + 5.
  await page.locator('#open-history').click();await page.waitForFunction(()=>document.querySelector('#result-task').value==='all'&&/范围总计 58/.test(document.querySelector('#result-summary').textContent));await waitRows(50);await stable();
  await selectRange('archive_other',5);assert.match(await page.locator('#result-summary').innerText(),/跨境运营.*范围总计 5/);assert.equal(await page.locator('#result-resume-task').isVisible(),true);assert.equal(await page.locator('#result-resume-task').isDisabled(),true);await stable();
@@ -105,7 +109,7 @@ try{
  await clearSearch();await page.locator('#result-city').selectOption('');await waitRows(5);await stable();
 
  // Diagnostic output reports the live task, not the historical preview, without raw records.
- await page.locator('#diagnostics').click();await page.waitForFunction(()=>document.querySelector('#diagnostics').textContent.includes('已复制'));
+ await page.locator('#diagnostics').click();await page.waitForFunction(()=>document.querySelector('#diagnostic-feedback').textContent.includes('已复制'));assert.equal(await page.locator('#diagnostics').innerText(),'复制运行诊断');assert.match(await page.locator('#diagnostic-feedback').innerText(),/Ctrl \+ V/);
  const copied=await page.evaluate(()=>navigator.clipboard.readText()),diagnostic=JSON.parse(copied),live=await state();
  assert.equal(diagnostic.status,'running');assert.equal(diagnostic.phase,live.phase);assert.equal(diagnostic.nextRunAt,new Date(live.nextRunAt).toISOString());assert.equal(diagnostic.totalSaved,53);assert.equal(diagnostic.roundSaved,0);
  for(const key of ['jobs','companies','token','privateToken','config'])assert.equal(Object.hasOwn(diagnostic,key),false,'Diagnostic must not include raw '+key);
@@ -113,8 +117,8 @@ try{
 
  // UI screenshots use demo records; the running task continues untouched in the background.
  await page.locator('#open-history').click();await page.waitForFunction(()=>document.querySelector('#result-task').value==='all'&&/范围总计 58/.test(document.querySelector('#result-summary').textContent));
- await page.evaluate(()=>scrollTo(0,0));await page.screenshot({path:path.join(outputDir,'BOSS采集插件_v2.0.2_界面预览.png'),fullPage:true});
- for(const width of [800,390]){await page.setViewportSize({width,height:1100});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+2),'UI must fit '+width+'px');if(width===390)await page.screenshot({path:path.join(outputDir,'BOSS采集插件_v2.0.2_390.png'),fullPage:true});}
+ await page.evaluate(()=>scrollTo(0,0));await page.screenshot({path:path.join(outputDir,'BOSS采集插件_待验版_界面预览.png'),fullPage:true});
+ for(const width of [800,390]){await page.setViewportSize({width,height:1100});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+2),'UI must fit '+width+'px');if(width===390)await page.screenshot({path:path.join(outputDir,'BOSS采集插件_待验版_390.png'),fullPage:true});}
  await page.setViewportSize({width:1440,height:1100});await selectRange('archive_other',5);
 
  // Only the explicit restore action changes the active task, after a user pause.
@@ -122,5 +126,5 @@ try{
  await page.locator('#result-resume-task').click();await page.waitForFunction(()=>__fixtureState().id==='archive-5');assert.equal(await page.locator('#result-task').inputValue(),'current');assert.equal((await state()).round.id,archive.round.id);assert.equal((await state()).status,'paused');await waitRows(5);
  const stored=await page.evaluate(()=>__fixtureStorage());assert.equal(Object.values(stored['archive_'+seed.id].jobs).filter(e=>e.status==='saved').length,53,'Restoring a historical task must archive all current results');
  assert.equal(await page.locator('#action-error').innerText(),'');assert.deepEqual(errors,[]);assert.deepEqual(remoteRequests,[]);
- console.log('V2.0.2 UI回归通过：真实模块导入；当前53+历史5=全部58且忽略陈旧快照；53条分页50/3；岗位/公司搜索及地区筛选；历史Excel导出5条及筛选后1条；运行中只读浏览历史、5秒轮询不切视图且活动任务/本轮ID不变；倒计时逐秒减少；诊断信息可复制且不含原始岗位/公司/Token；暂停后才可恢复历史任务；1440/800/390无横向溢出；无真实BOSS请求。');
+ console.log('工作台UI回归通过：真实模块导入；当前53+历史5=全部58且忽略陈旧快照；53条分页50/3；岗位/公司搜索及地区筛选；历史Excel导出5条及筛选后1条；运行中只读浏览历史、5秒轮询不切视图且活动任务/本轮ID不变；倒计时逐秒减少且显示当轮/基础等待；滑轨草稿13秒与运行生效60秒明确区分；诊断信息可复制且不含原始岗位/公司/Token；暂停后才可恢复历史任务；1440/800/390无横向溢出；无真实BOSS请求。');
 }finally{await browser?.close();await new Promise(r=>server.close(r));}

@@ -13,7 +13,7 @@ const settle = async () => {
   for (let n = 0; n < 50; n++) await new Promise(resolve => setImmediate(resolve));
 };
 
-function environment({ status = 'running', dueIn = -1, existingAlarm = false, legacyPacing, restUntil, config = {}, cardCount = 1, distinctCompanies = false } = {}) {
+function environment({ status = 'running', dueIn = -1, existingAlarm = false, legacyPacing, restUntil, config = {}, cardCount = 1, distinctCompanies = false, newCompanyPending = false } = {}) {
   let now = Date.now(), nextTab = 2, nextTimer = 1;
   class Clock extends Date {
     constructor(...args) { super(...(args.length ? args : [now])); }
@@ -22,7 +22,7 @@ function environment({ status = 'running', dueIn = -1, existingAlarm = false, le
   const task = core.fresh({ keyword: '剪辑', cities: ['北京'], target: 40, interval: 60, varied: false, ...config });
   core.beginRound(task);
   Object.assign(task, { status, phase: 'scan', tabId: 1, nextRunAt: now + dueIn });
-  const stored = { task }, alarms = new Map(), timers = new Map(), requests = [];
+  const stored = { task }, alarms = new Map(), timers = new Map(), requests = [], navigationReads = new Map(), navigationTargets = new Map();
   if (legacyPacing) stored.pacingSession = { startedAt: now - 24 * 60 * 60 * 1000, companies: 3, restUntil: 0 };
   if (restUntil) stored.pacingSession = { startedAt: now - 30 * 60 * 1000, companies: 3, restUntil: now + restUntil };
   if (existingAlarm) alarms.set('boss-collector-tick', { name: 'boss-collector-tick', scheduledTime: task.nextRunAt });
@@ -56,8 +56,24 @@ function environment({ status = 'running', dueIn = -1, existingAlarm = false, le
         onAlarm: { addListener: fn => { events.alarm = fn; } }
       },
       tabs: {
-        get: async id => { if (!tabs.has(id)) throw Error('closed'); return tabs.get(id); },
-        create: async value => { const tab = { id: nextTab++, status: 'complete', ...value }; tabs.set(tab.id, tab); return tab; },
+        get: async id => {
+          if (!tabs.has(id)) throw Error('closed');
+          const tab = tabs.get(id);
+          if (navigationReads.has(id)) {
+            const reads = navigationReads.get(id) + 1; navigationReads.set(id, reads);
+            if (newCompanyPending === 'late-pending' && reads === 2) tab.pendingUrl = navigationTargets.get(id);
+            if (reads >= 3) { tab.url = navigationTargets.get(id); delete tab.pendingUrl; tab.status = 'complete'; navigationReads.delete(id); navigationTargets.delete(id); }
+          }
+          return tab;
+        },
+        create: async value => {
+          const tab = { id: nextTab++, status: 'complete', ...value };
+          if (newCompanyPending && value.url.includes('/gongsi/')) {
+            if (newCompanyPending !== 'late-pending') tab.pendingUrl = value.url;
+            tab.url = ''; tab.status = 'loading'; navigationReads.set(tab.id, 0); navigationTargets.set(tab.id, value.url);
+          }
+          tabs.set(tab.id, tab); return tab;
+        },
         update: async (id, value) => Object.assign(tabs.get(id), value),
         remove: async id => tabs.delete(id), query: async () => [], reload: async () => {},
         sendMessage: async (id, message) => {
@@ -73,7 +89,14 @@ function environment({ status = 'running', dueIn = -1, existingAlarm = false, le
     // Page replies above resolve immediately; pageMessage clears those timers.
     const context = vm.createContext({
       ...core, chrome, structuredClone, URL, crypto, Date: Clock, console,
-      setTimeout: (fn, delay) => { const id = nextTimer++; timers.set(id, { fn, delay }); return id; },
+      setTimeout: (fn, delay) => {
+        const id = nextTimer++;
+        // Simulate navigation commit waits without wall-clock sleeping. Durable
+        // task waits remain alarm-driven and worker destruction drops timers.
+        if (delay === 500) { now += delay; queueMicrotask(fn); }
+        else timers.set(id, { fn, delay });
+        return id;
+      },
       clearTimeout: id => timers.delete(id)
     });
     vm.runInContext(background, context, { filename: 'background.js' });
@@ -82,12 +105,13 @@ function environment({ status = 'running', dueIn = -1, existingAlarm = false, le
   const command = message => new Promise(resolve => events.message(
     { channel: 'boss-dashboard', ...message },
     { url: 'chrome-extension://fixture/dashboard.html' }, resolve));
-  const fireAlarm = async () => {
-    alarms.delete('boss-collector-tick');
+  const fireAlarm = async (consume = true) => {
+    if (consume) alarms.delete('boss-collector-tick');
     await events.alarm({ name: 'boss-collector-tick' });
     await settle();
   };
   return { stored, alarms, requests, startWorker, command, fireAlarm,
+    timer: delay => [...timers.values()].find(timer => timer.delay === delay)?.fn,
     get now() { return now; }, advance: ms => { now += ms; } };
 }
 
@@ -108,8 +132,47 @@ test('cold recovery rearms a future deadline without restarting its wait', async
   assert.equal(h.stored.task.nextRunAt, due);
   assert.equal(h.requests.length, 0);
   assert.ok(h.alarms.has('boss-collector-tick'));
+  assert.equal(h.alarms.get('boss-collector-tick').scheduledTime, due);
   h.advance(30_000); await h.fireAlarm();
   assert.equal(core.savedCount(h.stored.task), 1);
+});
+
+test('fixed 13-second waits retain their exact persisted deadline through 30 cold company wakeups', async t => {
+  const h = environment({ dueIn: 13_000, config: { target: 30, interval: 13, varied: false },
+    cardCount: 30, distinctCompanies: true, newCompanyPending: 'late-pending' });
+  h.startWorker(); await settle(); const began = h.now;
+  for (let count = 1; count <= 30; count++) {
+    const alarm = h.alarms.get('boss-collector-tick');
+    assert.ok(alarm);
+    assert.equal(alarm.scheduledTime, h.stored.task.nextRunAt);
+    assert.equal(alarm.scheduledTime - h.now, 13_000);
+    h.advance(alarm.scheduledTime - h.now);
+    h.startWorker(); await h.fireAlarm();
+    assert.equal(core.roundCount(h.stored.task), count);
+    assert.equal(h.requests.filter(action => action === 'company').length, count);
+  }
+  assert.equal(core.savedCount(h.stored.task), 30);
+  assert.equal(h.stored.task.stopReason, 'target');
+  assert.equal(h.stored.task.nextRunAt, null);
+  assert.equal(h.alarms.has('boss-collector-tick'), false);
+  t.diagnostic(`30 cold wakeups at exactly persisted 13-second waits; 30 distinct companies; blank URL before pendingUrl; saved 30/30; virtual elapsed ${(h.now - began) / 1000}s.`);
+});
+
+for (const timerFirst of [false, true]) test('the precise alarm and short timer save only once when ' + (timerFirst ? 'the timer arrives first' : 'the alarm arrives first'), async () => {
+  const h = environment({ dueIn: 13_000, config: { target: 30, interval: 13, varied: false } });
+  h.startWorker(); await settle();
+  const callback = h.timer(13_000); assert.equal(typeof callback, 'function');
+  h.advance(13_000);
+  if (timerFirst) {
+    // Chrome can consume and queue the old one-shot before the timer saves its
+    // result. Delivering that queued event must not remove the replacement.
+    h.alarms.delete('boss-collector-tick'); await callback(); await settle();
+  }
+  await h.fireAlarm(!timerFirst);
+  if (!timerFirst) { await callback(); await settle(); }
+  assert.equal(core.roundCount(h.stored.task), 1);
+  assert.equal(h.requests.filter(action => action === 'company').length, 1);
+  assert.equal(h.alarms.get('boss-collector-tick').scheduledTime, h.stored.task.nextRunAt);
 });
 
 test('a warm alarm and its stale duplicate cannot execute two collection steps', async () => {
@@ -182,9 +245,9 @@ test('browser startup excludes closed hours before an overdue cold checkpoint ca
   assert.equal(h.stored.pacingSession.restUntil, 0);
 });
 
-test('three warm saves continue through 27 cold alarm wakeups and stop at exactly 30 new jobs', async t => {
+for (const newCompanyPending of [false, true]) test('three warm saves continue through 27 cold alarm wakeups and stop at exactly 30 new jobs' + (newCompanyPending ? ' with initially uncommitted company tabs' : ''), async t => {
   const h = environment({ dueIn: 30_000, existingAlarm: true,
-    config: { target: 30, interval: 10, varied: false }, cardCount: 30, distinctCompanies: true });
+    config: { target: 30, interval: 10, varied: false }, cardCount: 30, distinctCompanies: true, newCompanyPending });
   const began = h.now;
   let steps = 0;
   h.startWorker(); await settle();

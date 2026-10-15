@@ -105,7 +105,7 @@ test('old backup rows stay separate from the new round and smaller lists can fin
 });
 test('early or stale alarms cannot run an extra step during a scheduled wait',async()=>{
  const h=await harness();await h.control({action:'new',config:{keyword:'剪辑',cities:['北京'],interval:10,varied:false}});let alarm;chrome.alarms.create=async(name,options)=>{alarm=options;};
- const before=Date.now();await h.control({action:'resume'});assert.ok(h.stored.task.nextRunAt>=before+10000);assert.ok(alarm.when>=before+30000);
+ const before=Date.now();await h.control({action:'resume'});assert.ok(h.stored.task.nextRunAt>=before+10000);assert.equal(alarm.when,h.stored.task.nextRunAt);
  await h.events.alarm[0]({name:'boss-collector-tick'});assert.equal(h.requests.length,0);await h.control({action:'pause'});
 });
 test('saved company data is reused across different keywords without another company visit',async()=>{
